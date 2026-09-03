@@ -1,0 +1,14 @@
+{
+  "domain": "geotrack_bus",
+  "name": "GeoTrack Bus Tracking",
+  "codeowners": [
+    "@airloeb"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/airloeb/ha-geotrack-bus",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/airloeb/ha-geotrack-bus/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

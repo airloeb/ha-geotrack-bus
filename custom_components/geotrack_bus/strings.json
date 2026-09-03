@@ -1,0 +1,73 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to the GeoTrack parent portal",
+        "description": "Sign in at the portal in your browser, open DevTools → Network, reload the page, click the GetVehicles request and copy the whole Cookie request header. Paste it below.",
+        "data": {
+          "host": "Portal host",
+          "cookie": "Session cookie"
+        },
+        "data_description": {
+          "host": "The domain you sign in to, for example parent.geotrackny.com",
+          "cookie": "The full Cookie header, e.g. name1=value1; name2=value2"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Session expired",
+        "description": "The session cookie for {host} is no longer accepted. Sign in again in your browser and paste the new Cookie header.",
+        "data": {
+          "cookie": "Session cookie"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the portal.",
+      "invalid_auth": "The portal rejected that cookie. Sign in again and copy a fresh one."
+    },
+    "abort": {
+      "already_configured": "This portal is already set up.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling options",
+        "data": {
+          "scan_interval": "Update interval"
+        },
+        "data_description": {
+          "scan_interval": "How often to poll the portal. The portal itself refreshes roughly every 20 seconds."
+        }
+      }
+    }
+  },
+  "entity": {
+    "device_tracker": {},
+    "sensor": {
+      "speed": { "name": "Speed" },
+      "bearing": { "name": "Bearing" },
+      "address": { "name": "Current address" },
+      "route": { "name": "Route" },
+      "last_report": { "name": "Last report" },
+      "stops_away": { "name": "{stop} stops away" },
+      "status": {
+        "name": "{stop} status",
+        "state": {
+          "approaching": "Approaching",
+          "at_stop": "At your stop",
+          "passed": "Already passed",
+          "unknown": "Unknown"
+        }
+      },
+      "distance": { "name": "{stop} distance" },
+      "message": { "name": "{stop} message" }
+    },
+    "binary_sensor": {
+      "moving": { "name": "Moving" },
+      "at_stop": { "name": "{stop} bus at stop" },
+      "already_passed": { "name": "{stop} already passed" }
+    }
+  }
+}
