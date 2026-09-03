@@ -8,6 +8,8 @@ DOMAIN: Final = "geotrack_bus"
 
 CONF_COOKIE: Final = "cookie"
 CONF_HOST: Final = "host"
+CONF_PHONE: Final = "phone"
+CONF_COMMUNICATION: Final = "communication"
 
 DEFAULT_HOST: Final = "parent.geotrackny.com"
 DEFAULT_SCAN_INTERVAL: Final = 20

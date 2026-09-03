@@ -49,25 +49,36 @@ Copy `custom_components/geotrack_bus` into your Home Assistant
 
 Requires Home Assistant 2025.1 or newer.
 
-## Getting the session cookie
+## Signing in
 
-The portal has no password — it signs you in with a code texted to your phone —
-so there is nothing the integration can log in with on its own. Instead you hand
-it the session your browser already has.
+The portal has no password — it identifies you by phone number and a short code
+it sends you. The integration offers two ways in.
 
-1. In a desktop browser, sign in at `https://parent.geotrackny.com/Home`.
+### Phone code (recommended)
+
+Pick **"Sign in with a code sent to my phone"**, enter the number registered with
+your school's GeoTrack account, and choose text message or phone call. The portal
+sends a code; type it into the next screen. Nothing else is needed, and it works
+entirely from the Home Assistant app.
+
+### Session cookie
+
+Pick **"Paste a session cookie from my browser"** if you would rather not receive
+a code, or if the phone step fails.
+
+1. In a desktop browser, sign in at your portal's `/Home` page.
 2. Open DevTools (`⌘⌥I` / `F12`) → **Network** tab.
 3. Reload the page and click the request named **`GetVehicles`**.
-4. Under **Headers → Request Headers**, find **`Cookie`** and copy its entire value.
-5. Paste that into the integration's *Session cookie* field. Pasting the whole
-   `Cookie: ...` line is fine — the leading `Cookie:` is stripped for you.
+4. Under **Headers → Request Headers**, copy the entire **`Cookie`** value.
+5. Paste it in. Pasting the whole `Cookie: ...` line is fine — the leading
+   `Cookie:` is stripped for you.
 
 Treat that string like a password; it *is* your login.
 
-**When it expires:** Home Assistant raises a re-authentication notification. Sign
-in again in your browser, grab a fresh cookie, and paste it into the prompt. The
-portal sets a persistent device cookie, so in practice this is infrequent — but
-it will happen eventually, and it will happen if you sign out in that browser.
+**When the session expires:** Home Assistant raises a re-authentication
+notification and offers both routes again. The portal sets a persistent device
+cookie, so this is infrequent — but it will happen eventually, and it will happen
+if you sign out in that browser.
 
 ## Polling
 

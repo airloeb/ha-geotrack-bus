@@ -15,6 +15,16 @@ import aiohttp
 _LOGGER = logging.getLogger(__name__)
 
 VEHICLES_PATH = "/Map/GetVehicles"
+LOGIN_PATH = "/Account/Login"
+VERIFY_PATH = "/Account/SecondStepVerification"
+
+COMMUNICATION_SMS = "SMS"
+COMMUNICATION_CALL = "PhoneCall"
+
+_TOKEN_RE = re.compile(
+    r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', re.IGNORECASE
+)
+_NO_ACCOUNT_RE = re.compile(r"not linked to any account", re.IGNORECASE)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 # The portal is an ASP.NET MVC app, so timestamps arrive as "/Date(1788468579000)/",
@@ -46,6 +56,50 @@ class GeoTrackConnectionError(GeoTrackError):
 
 class GeoTrackAuthError(GeoTrackError):
     """The stored session cookie is no longer valid."""
+
+
+class GeoTrackLoginError(GeoTrackError):
+    """A step of the phone/code login was rejected by the portal."""
+
+    def __init__(self, reason: str, message: str | None = None) -> None:
+        """Record which step failed so the config flow can show the right error."""
+        super().__init__(message or reason)
+        self.reason = reason
+
+
+class CookieStore:
+    """A minimal cookie jar.
+
+    The portal issues cookies whose names contain "/", which is not a valid
+    RFC 6265 token, so http.cookies (and therefore aiohttp's own jar) drops
+    them. Parsing Set-Cookie by hand is the only way to keep the session.
+    """
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self._cookies: dict[str, str] = {}
+
+    def update(self, response: aiohttp.ClientResponse) -> None:
+        """Absorb every Set-Cookie header on a response."""
+        for header in response.headers.getall("Set-Cookie", []):
+            pair, _, attrs = header.partition(";")
+            name, sep, value = pair.strip().partition("=")
+            if not sep or not name:
+                continue
+            lowered = attrs.lower()
+            if "max-age=0" in lowered.replace(" ", "") or not value:
+                self._cookies.pop(name, None)
+                continue
+            self._cookies[name] = value
+
+    @property
+    def header(self) -> str:
+        """The Cookie request header for everything collected so far."""
+        return "; ".join(f"{k}={v}" for k, v in self._cookies.items())
+
+    def __bool__(self) -> bool:
+        """Whether any cookie has been collected."""
+        return bool(self._cookies)
 
 
 def parse_dotnet_date(value: Any) -> datetime | None:
@@ -274,3 +328,124 @@ class GeoTrackApi:
         buses = [Bus.from_json(item) for item in payload if isinstance(item, dict)]
         _LOGGER.debug("Fetched %d bus(es) from %s", len(buses), self._host)
         return buses
+
+
+class GeoTrackLogin:
+    """Walks the portal's two-step phone/code login and yields a session cookie.
+
+    The portal has no password: step one posts a phone number and it texts (or
+    reads out) a short code, step two posts that code back. What comes out is an
+    ordinary session cookie, the same thing you would copy from a browser.
+    """
+
+    def __init__(self, session: aiohttp.ClientSession, host: str) -> None:
+        """Initialise the login helper."""
+        self._session = session
+        self._host = host
+        self._cookies = CookieStore()
+
+    def _url(self, path: str) -> str:
+        return f"https://{self._host}{path}"
+
+    def _headers(self, referer: str | None = None) -> dict[str, str]:
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        if self._cookies:
+            headers["Cookie"] = self._cookies.header
+        if referer:
+            headers["Referer"] = self._url(referer)
+        return headers
+
+    async def _get_token(self, path: str, referer: str | None = None) -> str:
+        """Fetch a page and pull its ASP.NET anti-forgery token out of the form."""
+        try:
+            response = await self._session.get(
+                self._url(path),
+                headers=self._headers(referer),
+                allow_redirects=False,
+                timeout=REQUEST_TIMEOUT,
+            )
+            self._cookies.update(response)
+            body = await response.text()
+        except aiohttp.ClientError as err:
+            raise GeoTrackConnectionError(f"Cannot reach {self._host}: {err}") from err
+        except asyncio.TimeoutError as err:
+            raise GeoTrackConnectionError(f"Timed out talking to {self._host}") from err
+
+        match = _TOKEN_RE.search(body)
+        if not match:
+            raise GeoTrackLoginError(
+                "unexpected_response", f"No login form at {path}"
+            )
+        return match.group(1)
+
+    async def _post(self, path: str, data: dict[str, str], referer: str) -> tuple[int, str]:
+        """Post a form and return (status, body), never following redirects."""
+        try:
+            response = await self._session.post(
+                self._url(path),
+                data=data,
+                headers={
+                    **self._headers(referer),
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                allow_redirects=False,
+                timeout=REQUEST_TIMEOUT,
+            )
+            self._cookies.update(response)
+            return response.status, await response.text()
+        except aiohttp.ClientError as err:
+            raise GeoTrackConnectionError(f"Cannot reach {self._host}: {err}") from err
+        except asyncio.TimeoutError as err:
+            raise GeoTrackConnectionError(f"Timed out talking to {self._host}") from err
+
+    async def async_request_code(
+        self, phone: str, communication: str = COMMUNICATION_SMS
+    ) -> None:
+        """Ask the portal to send a login code to this phone number."""
+        digits = re.sub(r"\D", "", phone)
+        token = await self._get_token(LOGIN_PATH)
+        status, body = await self._post(
+            LOGIN_PATH,
+            {
+                "__RequestVerificationToken": token,
+                "Phone": digits,
+                "Communication": communication,
+            },
+            referer=LOGIN_PATH,
+        )
+        # Success is a redirect to the code page; a 200 means the form came back
+        # with a validation message on it.
+        if status in (301, 302, 303, 307, 308):
+            _LOGGER.debug("Login code requested for %s", digits[-4:].rjust(len(digits), "*"))
+            return
+        if _NO_ACCOUNT_RE.search(body):
+            raise GeoTrackLoginError("phone_not_found")
+        raise GeoTrackLoginError("cannot_request_code")
+
+    async def async_submit_code(self, phone: str, code: str) -> str:
+        """Submit the code and return the resulting Cookie header."""
+        digits = re.sub(r"\D", "", phone)
+        clean_code = code.strip()
+        verify_path = f"{VERIFY_PATH}?Phone={digits}"
+        token = await self._get_token(verify_path, referer=LOGIN_PATH)
+        status, _body = await self._post(
+            VERIFY_PATH,
+            {
+                "__RequestVerificationToken": token,
+                "Phone": digits,
+                "Code": clean_code,
+            },
+            referer=verify_path,
+        )
+        if status not in (301, 302, 303, 307, 308):
+            raise GeoTrackLoginError("invalid_code")
+        if not self._cookies:
+            raise GeoTrackLoginError("unexpected_response", "No session cookie issued")
+
+        # Prove the session actually works before handing it to the coordinator,
+        # rather than discovering it at the first poll.
+        cookie = self._cookies.header
+        await GeoTrackApi(self._session, self._host, cookie).async_get_buses()
+        return cookie
