@@ -1,0 +1,74 @@
+# School Bus dashboard
+#
+# To use: Settings -> Dashboards -> + Add Dashboard -> New dashboard from scratch
+# ("School Bus", icon mdi:bus-school). Open it, then top-right pencil -> ⋮ ->
+# "Raw configuration editor", and paste everything below.
+#
+# Entity ids assume bus 399 / your stop 13 and bus P123 / your stop 7 — the two
+# buses your account reported. If tomorrow's run shows different ones, the cards
+# will read "Entity not available"; send me the real names and I'll correct them.
+
+views:
+  - title: School Bus
+    path: buses
+    icon: mdi:bus-school
+    cards:
+      - type: markdown
+        content: >-
+          Buses appear only while they are on a run. Outside school hours these
+          cards read *unavailable* — that is normal, not a fault.
+
+
+          `Last report` shows how fresh a position really is.
+
+      - type: vertical-stack
+        cards:
+          - type: map
+            entities:
+              - device_tracker.bus_399
+            hours_to_show: 1
+            theme_mode: auto
+          - type: entities
+            title: Bus 399 — Stop 13
+            entities:
+              - entity: sensor.bus_399_stop_13_status
+                name: Status
+              - entity: sensor.bus_399_stop_13_stops_away
+                name: Stops away
+              - entity: sensor.bus_399_stop_13_distance
+                name: Distance to stop
+              - type: divider
+              - entity: sensor.bus_399_speed
+                name: Speed
+              - entity: sensor.bus_399_current_address
+                name: Now near
+              - entity: sensor.bus_399_route
+                name: Route
+              - entity: sensor.bus_399_last_report
+                name: Last report
+
+      - type: vertical-stack
+        cards:
+          - type: map
+            entities:
+              - device_tracker.bus_p123
+            hours_to_show: 1
+            theme_mode: auto
+          - type: entities
+            title: Bus P123 — Stop 7
+            entities:
+              - entity: sensor.bus_p123_stop_7_status
+                name: Status
+              - entity: sensor.bus_p123_stop_7_stops_away
+                name: Stops away
+              - entity: sensor.bus_p123_stop_7_distance
+                name: Distance to stop
+              - type: divider
+              - entity: sensor.bus_p123_speed
+                name: Speed
+              - entity: sensor.bus_p123_current_address
+                name: Now near
+              - entity: sensor.bus_p123_route
+                name: Route
+              - entity: sensor.bus_p123_last_report
+                name: Last report
