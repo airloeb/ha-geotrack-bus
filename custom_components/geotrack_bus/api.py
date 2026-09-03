@@ -22,8 +22,8 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 _DOTNET_DATE_RE = re.compile(r"^/Date\((-?\d+)(?:([+-])(\d{2})(\d{2}))?\)/$")
 
 # Status strings the portal builds for each of your stops, e.g.
-#   "bus 399, Route: OBYHS1P is before stop number 1, Your stop number is 13"
-#   "bus P123, Route: BEMTR30P was by your stop at 4:20 PM, Your stop number is 7"
+#   "bus 123, Route: ABC12P is before stop number 1, Your stop number is 9"
+#   "bus 123, Route: ABC12P was by your stop at 4:20 PM, Your stop number is 9"
 _ROUTE_RE = re.compile(r"Route:\s*(\S+)")
 _BEFORE_STOP_RE = re.compile(r"before stop number\s*(\d+)", re.IGNORECASE)
 _AT_STOP_RE = re.compile(r"(is at|arriving at|approaching)\s+your stop", re.IGNORECASE)

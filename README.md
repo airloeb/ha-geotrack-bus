@@ -4,39 +4,48 @@ Brings your school bus from the GeoTrack parent portal (`parent.geotrackny.com`)
 into Home Assistant as a live map marker plus sensors you can build dashboards
 and notifications on.
 
+> Entity ids below use a placeholder bus `123` and stop `9`. Yours will use your
+> own bus and stop numbers — check **Settings → Devices & Services → Devices**
+> after setup.
+
 ## What it creates
 
 One **device per bus**, with:
 
 | Entity | Example | Notes |
 | --- | --- | --- |
-| `device_tracker.bus_399` | on the HA map | GPS position, updates while the bus moves |
-| `sensor.bus_399_speed` | `34 mph` | |
-| `sensor.bus_399_bearing` | `302°` | `direction` attribute gives `WNW` |
-| `sensor.bus_399_current_address` | `16-1 Walker Dr, Lakewood, NJ` | reverse-geocoded by the portal |
-| `sensor.bus_399_route` | `OBYHS1P` | |
-| `sensor.bus_399_last_report` | timestamp | how fresh the position actually is |
-| `binary_sensor.bus_399_moving` | `on` / `off` | |
+| `device_tracker.bus_123` | on the HA map | GPS position, updates while the bus moves |
+| `sensor.bus_123_speed` | `34 mph` | |
+| `sensor.bus_123_bearing` | `302°` | `direction` attribute gives `WNW` |
+| `sensor.bus_123_current_address` | `120 Main St, Springfield, NJ` | reverse-geocoded by the portal |
+| `sensor.bus_123_route` | `ABC12P` | |
+| `sensor.bus_123_last_report` | timestamp | how fresh the position actually is |
+| `binary_sensor.bus_123_moving` | `on` / `off` | |
 
 Then, for each of **your** stops on that bus (one set per child/stop):
 
 | Entity | Example | Notes |
 | --- | --- | --- |
-| `sensor.bus_399_stop_13_stops_away` | `12` | your stop number minus the bus's current stop |
-| `sensor.bus_399_stop_13_status` | `approaching` | `approaching` / `at_stop` / `passed` / `unknown` |
-| `sensor.bus_399_stop_13_distance` | `4.1 mi` | straight-line bus→stop distance |
-| `sensor.bus_399_stop_13_message` | the portal's own wording | |
-| `binary_sensor.bus_399_stop_13_bus_at_stop` | `on` / `off` | |
-| `binary_sensor.bus_399_stop_13_already_passed` | `on` / `off` | resets when the portal starts a new run |
-
-Entity ids depend on your bus and stop numbers — check **Settings → Devices** after setup.
+| `sensor.bus_123_stop_9_stops_away` | `8` | your stop number minus the bus's current stop |
+| `sensor.bus_123_stop_9_status` | `approaching` | `approaching` / `at_stop` / `passed` / `unknown` |
+| `sensor.bus_123_stop_9_distance` | `4.1 mi` | straight-line bus→stop distance |
+| `sensor.bus_123_stop_9_message` | the portal's own wording | |
+| `binary_sensor.bus_123_stop_9_bus_at_stop` | `on` / `off` | |
+| `binary_sensor.bus_123_stop_9_already_passed` | `on` / `off` | resets when the portal starts a new run |
 
 ## Install
 
-1. Copy `custom_components/geotrack_bus` into your Home Assistant `config/custom_components/` folder
-   (so you end up with `config/custom_components/geotrack_bus/manifest.json`).
-2. Restart Home Assistant.
-3. **Settings → Devices & Services → Add Integration → GeoTrack Bus Tracking**.
+### HACS (recommended)
+
+1. **HACS → ⋮ → Custom repositories**, add this repository with type **Integration**.
+2. Search HACS for **GeoTrack Bus Tracking** and download it.
+3. Restart Home Assistant.
+4. **Settings → Devices & Services → Add Integration → GeoTrack Bus Tracking**.
+
+### Manual
+
+Copy `custom_components/geotrack_bus` into your Home Assistant
+`config/custom_components/` folder, restart, then add the integration.
 
 Requires Home Assistant 2025.1 or newer.
 
@@ -55,10 +64,10 @@ it the session your browser already has.
 
 Treat that string like a password; it *is* your login.
 
-**When it expires:** Home Assistant raises a "reconfigure" notification. Sign in
-again in your browser, grab a fresh cookie, and paste it into the re-auth prompt.
-The portal sets a persistent device cookie, so in practice this is infrequent —
-but it will happen eventually, and it will happen if you sign out in that browser.
+**When it expires:** Home Assistant raises a re-authentication notification. Sign
+in again in your browser, grab a fresh cookie, and paste it into the prompt. The
+portal sets a persistent device cookie, so in practice this is infrequent — but
+it will happen eventually, and it will happen if you sign out in that browser.
 
 ## Polling
 
@@ -74,86 +83,90 @@ type: vertical-stack
 cards:
   - type: map
     entities:
-      - device_tracker.bus_399
+      - device_tracker.bus_123
     hours_to_show: 1
     theme_mode: auto
   - type: entities
-    title: Bus 399
+    title: Bus 123
     entities:
-      - entity: sensor.bus_399_stop_13_status
+      - entity: sensor.bus_123_stop_9_status
         name: Status
-      - entity: sensor.bus_399_stop_13_stops_away
+      - entity: sensor.bus_123_stop_9_stops_away
         name: Stops away
-      - entity: sensor.bus_399_stop_13_distance
+      - entity: sensor.bus_123_stop_9_distance
         name: Distance to stop
-      - entity: sensor.bus_399_speed
+      - entity: sensor.bus_123_speed
         name: Speed
-      - entity: sensor.bus_399_current_address
+      - entity: sensor.bus_123_current_address
         name: Now near
-      - entity: sensor.bus_399_last_report
+      - entity: sensor.bus_123_last_report
         name: Last report
 ```
 
 ## Automations
 
-**Head outside — the bus is three stops away.** The `below` guard stops it
+**Head outside — the bus is a few stops away.** The `below` guard stops it
 re-firing as the counter ticks down.
 
 ```yaml
-alias: Bus 399 approaching
+alias: Bus approaching
 triggers:
   - trigger: numeric_state
-    entity_id: sensor.bus_399_stop_13_stops_away
+    entity_id: sensor.bus_123_stop_9_stops_away
     below: 4
 conditions:
   - condition: state
-    entity_id: sensor.bus_399_stop_13_status
+    entity_id: sensor.bus_123_stop_9_status
     state: approaching
 actions:
-  - action: notify.washing_machine_dryer
+  - action: notify.mobile_app_your_phone
     data:
       title: School bus
       message: >-
-        Bus 399 is {{ states('sensor.bus_399_stop_13_stops_away') }} stops away
-        ({{ states('sensor.bus_399_stop_13_distance') }} mi).
+        Bus 123 is {{ states('sensor.bus_123_stop_9_stops_away') }} stops away
+        ({{ states('sensor.bus_123_stop_9_distance') }} mi).
 mode: single
 ```
 
 **The bus reached your stop.**
 
 ```yaml
-alias: Bus 399 at our stop
+alias: Bus at our stop
 triggers:
   - trigger: state
-    entity_id: binary_sensor.bus_399_stop_13_bus_at_stop
+    entity_id: binary_sensor.bus_123_stop_9_bus_at_stop
     to: "on"
 actions:
-  - action: notify.washing_machine_dryer
+  - action: notify.mobile_app_your_phone
     data:
-      message: Bus 399 is at your stop now.
+      message: Bus 123 is at your stop now.
 ```
 
 **Missed it.** Fires once when the portal flips the stop to "already passed".
 
 ```yaml
-alias: Bus 399 already came
+alias: Bus already came
 triggers:
   - trigger: state
-    entity_id: binary_sensor.bus_399_stop_13_already_passed
+    entity_id: binary_sensor.bus_123_stop_9_already_passed
     to: "on"
 actions:
-  - action: notify.washing_machine_dryer
+  - action: notify.mobile_app_your_phone
     data:
       message: >-
-        Bus 399 went by the stop at
-        {{ state_attr('sensor.bus_399_stop_13_status', 'passed_at') }}.
+        Bus 123 went by the stop at
+        {{ state_attr('sensor.bus_123_stop_9_status', 'passed_at') }}.
 ```
 
 ## Notes
 
 - The integration is read-only; it never posts anything back to the portal.
 - `stops_away` is derived from the portal's own status text
-  (*"is before stop number 1, Your stop number is 13"*), so it is a stop count,
+  (*"is before stop number 1, Your stop number is 9"*), so it is a stop count,
   not a time estimate. The portal does not publish an ETA.
 - New buses and stops appear as entities automatically the first time they show
   up in the feed — no restart needed.
+
+## License
+
+MIT
