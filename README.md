@@ -30,6 +30,8 @@ Then, for each of **your** stops on that bus (one set per child/stop):
 | `sensor.bus_123_stop_9_status` | `approaching` | `approaching` / `at_stop` / `passed` / `unknown` |
 | `sensor.bus_123_stop_9_distance` | `4.1 mi` | straight-line bus→stop distance |
 | `sensor.bus_123_stop_9_message` | the portal's own wording | |
+| `sensor.bus_123_stop_9_eta` | `15 min` | estimated; see below |
+| `binary_sensor.bus_123_stop_9_arriving_soon` | `on` / `off` | on when the ETA is within your warning window |
 | `binary_sensor.bus_123_stop_9_bus_at_stop` | `on` / `off` | |
 | `binary_sensor.bus_123_stop_9_already_passed` | `on` / `off` | resets when the portal starts a new run |
 
@@ -79,6 +81,30 @@ Treat that string like a password; it *is* your login.
 notification and offers both routes again. The portal sets a persistent device
 cookie, so this is infrequent — but it will happen eventually, and it will happen
 if you sign out in that browser.
+
+## The ETA is estimated, not published
+
+The portal reports only which stop the bus is working on — *"is before stop
+number 1, Your stop number is 13"*. It has no arrival time to give, so the
+integration measures one.
+
+Each time the bus advances a stop, the gap is timed and kept in a rolling
+average of the last 40 gaps, per bus and stop. The ETA is then simply
+`stops_away × average seconds per stop`. Gaps shorter than 8 s or longer than
+10 min are discarded as noise (a missed poll, a depot wait, a run starting
+mid-route), and a run restarting its stop numbering does not record a gap.
+
+Until three gaps have been timed, a 70 s/stop default stands in and the ETA
+sensor's `estimate_quality` attribute reads `default` rather than `measured`.
+Averages persist across restarts.
+
+`binary_sensor.<bus>_<stop>_arriving_soon` turns on when the ETA falls within
+the warning window set under **Configure** (default 5 minutes) — that is the
+entity to build a "leave the house now" notification on.
+
+Treat it as a decent guess, not a guarantee: it assumes the remaining stops
+behave like the recent ones, and knows nothing about traffic or an unusually
+long boarding.
 
 ## Polling
 

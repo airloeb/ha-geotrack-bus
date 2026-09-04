@@ -40,14 +40,18 @@ from .api import (
 )
 from .const import (
     CONF_COMMUNICATION,
+    CONF_WARNING_MINUTES,
     CONF_COOKIE,
     CONF_HOST,
     CONF_PHONE,
     DEFAULT_HOST,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_WARNING_MINUTES,
     DOMAIN,
     MAX_SCAN_INTERVAL,
+    MAX_WARNING_MINUTES,
     MIN_SCAN_INTERVAL,
+    MIN_WARNING_MINUTES,
 )
 from .coordinator import GeoTrackConfigEntry
 
@@ -264,15 +268,19 @@ class GeoTrackOptionsFlow(OptionsFlow):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(
-                data={CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL])}
+                data={
+                    CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                    CONF_WARNING_MINUTES: int(user_input[CONF_WARNING_MINUTES]),
+                }
             )
 
-        current = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-        )
+        options = self.config_entry.options
         schema = vol.Schema(
             {
-                vol.Required(CONF_SCAN_INTERVAL, default=current): NumberSelector(
+                vol.Required(
+                    CONF_SCAN_INTERVAL,
+                    default=options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                ): NumberSelector(
                     NumberSelectorConfig(
                         min=MIN_SCAN_INTERVAL,
                         max=MAX_SCAN_INTERVAL,
@@ -280,7 +288,21 @@ class GeoTrackOptionsFlow(OptionsFlow):
                         unit_of_measurement="seconds",
                         mode=NumberSelectorMode.BOX,
                     )
-                )
+                ),
+                vol.Required(
+                    CONF_WARNING_MINUTES,
+                    default=options.get(
+                        CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_WARNING_MINUTES,
+                        max=MAX_WARNING_MINUTES,
+                        step=1,
+                        unit_of_measurement="minutes",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

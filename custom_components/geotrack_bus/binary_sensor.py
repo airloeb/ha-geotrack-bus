@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -13,7 +14,8 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .api import STATUS_AT_STOP, STATUS_PASSED, Bus, Stop
+from .api import STATUS_APPROACHING, STATUS_AT_STOP, STATUS_PASSED, Bus, Stop
+from .const import CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
 from .coordinator import GeoTrackConfigEntry, GeoTrackCoordinator
 from .entity import GeoTrackBusEntity, GeoTrackStopEntity
 
@@ -41,7 +43,23 @@ BUS_BINARY_SENSORS: tuple[GeoTrackBusBinaryDescription, ...] = (
     ),
 )
 
+def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool | None:
+    """Whether the bus is within the user's warning window of this stop."""
+    if stop.status != STATUS_APPROACHING or stop.eta_minutes is None:
+        return False
+    threshold = coordinator.config_entry.options.get(
+        CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+    )
+    return stop.eta_minutes <= float(threshold)
+
+
 STOP_BINARY_SENSORS: tuple[GeoTrackStopBinaryDescription, ...] = (
+    GeoTrackStopBinaryDescription(
+        key="arriving_soon",
+        translation_key="arriving_soon",
+        icon="mdi:bus-clock",
+        value_fn=lambda bus, stop: None,  # replaced per-entity; see is_on below
+    ),
     GeoTrackStopBinaryDescription(
         key="at_stop",
         translation_key="at_stop",
@@ -141,4 +159,21 @@ class GeoTrackStopBinarySensor(GeoTrackStopEntity, BinarySensorEntity):
         bus, stop = self.bus, self.stop
         if bus is None or stop is None:
             return None
+        if self.entity_description.key == "arriving_soon":
+            return _arriving_soon(self.coordinator, stop)
         return self.entity_description.value_fn(bus, stop)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Surface the estimate behind an arriving-soon alert."""
+        stop = self.stop
+        if stop is None or self.entity_description.key != "arriving_soon":
+            return None
+        return {
+            "eta_minutes": stop.eta_minutes,
+            "stops_away": stop.stops_away,
+            "warning_minutes": self.coordinator.config_entry.options.get(
+                CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+            ),
+            "estimate_quality": "measured" if stop.eta_learned else "default",
+        }

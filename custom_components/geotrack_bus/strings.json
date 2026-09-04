@@ -68,10 +68,12 @@
       "init": {
         "title": "Polling options",
         "data": {
-          "scan_interval": "Update interval"
+          "scan_interval": "Update interval",
+          "warning_minutes": "Warn me this many minutes ahead"
         },
         "data_description": {
-          "scan_interval": "How often to poll the portal. The portal itself refreshes roughly every 20 seconds."
+          "scan_interval": "How often to poll the portal. The portal itself refreshes roughly every 20 seconds.",
+          "warning_minutes": "The ETA is estimated from how long this bus actually takes between stops, measured over time. The portal itself publishes no arrival time."
         }
       }
     }
@@ -111,6 +113,9 @@
       },
       "message": {
         "name": "{stop} message"
+      },
+      "eta": {
+        "name": "{stop} ETA"
       }
     },
     "binary_sensor": {
@@ -122,6 +127,9 @@
       },
       "already_passed": {
         "name": "{stop} already passed"
+      },
+      "arriving_soon": {
+        "name": "{stop} arriving soon"
       }
     }
   },

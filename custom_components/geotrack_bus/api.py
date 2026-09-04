@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -17,6 +18,14 @@ _LOGGER = logging.getLogger(__name__)
 VEHICLES_PATH = "/Map/GetVehicles"
 LOGIN_PATH = "/Account/Login"
 VERIFY_PATH = "/Account/SecondStepVerification"
+
+# ETA tuning. The portal publishes no arrival time, so minutes are derived from
+# how long this bus actually takes between stops.
+DEFAULT_SECONDS_PER_STOP = 70.0
+MIN_STOP_SECONDS = 8.0
+MAX_STOP_SECONDS = 600.0
+ETA_SAMPLE_WINDOW = 40
+ETA_MIN_SAMPLES = 3
 
 COMMUNICATION_SMS = "SMS"
 COMMUNICATION_CALL = "PhoneCall"
@@ -143,6 +152,11 @@ class Stop:
     stops_away: int | None
     passed_at: str | None
     status: str
+    # Filled in by the coordinator, which is what watches the bus over time.
+    eta_minutes: float | None = None
+    seconds_per_stop: float | None = None
+    eta_samples: int = 0
+    eta_learned: bool = False
 
     @property
     def key(self) -> str:
@@ -203,6 +217,50 @@ class Stop:
             status=status,
         )
 
+
+@dataclass(slots=True)
+class StopPace:
+    """How long this bus takes between consecutive stops.
+
+    The portal publishes no ETA — only which stop the bus is working on — so the
+    only way to turn "8 stops away" into minutes is to time the bus ourselves.
+    """
+
+    samples: deque[float] = field(
+        default_factory=lambda: deque(maxlen=ETA_SAMPLE_WINDOW)
+    )
+    last_stop: int | None = None
+    last_seen: datetime | None = None
+
+    @property
+    def seconds_per_stop(self) -> float:
+        """Average seconds between stops, falling back to a sane default."""
+        if not self.samples:
+            return DEFAULT_SECONDS_PER_STOP
+        return sum(self.samples) / len(self.samples)
+
+    @property
+    def learned(self) -> bool:
+        """Whether enough gaps have been timed to trust the average."""
+        return len(self.samples) >= ETA_MIN_SAMPLES
+
+    def observe(self, current_stop: int | None, now: datetime) -> None:
+        """Record where the bus is, timing the gap since the previous stop."""
+        if current_stop is None:
+            return
+
+        previous, seen = self.last_stop, self.last_seen
+        self.last_stop, self.last_seen = current_stop, now
+
+        if previous is None or seen is None or current_stop <= previous:
+            # No baseline, or the numbering went backwards because a new run
+            # started. Either way there is no gap worth timing.
+            return
+
+        advanced = current_stop - previous
+        per_stop = (now - seen).total_seconds() / advanced
+        if MIN_STOP_SECONDS <= per_stop <= MAX_STOP_SECONDS:
+            self.samples.append(per_stop)
 
 @dataclass(slots=True)
 class Bus:

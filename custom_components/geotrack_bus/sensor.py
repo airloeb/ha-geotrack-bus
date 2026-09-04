@@ -18,6 +18,7 @@ from homeassistant.const import (
     DEGREE,
     UnitOfLength,
     UnitOfSpeed,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -150,6 +151,20 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         value_fn=lambda bus, stop: _distance_m(
             bus.latitude, bus.longitude, stop.latitude, stop.longitude
         ),
+    ),
+    GeoTrackStopSensorDescription(
+        key="eta",
+        translation_key="eta",
+        icon="mdi:timer-sand",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
+        value_fn=lambda bus, stop: stop.eta_minutes,
+        attributes_fn=lambda bus, stop: {
+            "seconds_per_stop": stop.seconds_per_stop,
+            "samples": stop.eta_samples,
+            "estimate_quality": "measured" if stop.eta_learned else "default",
+        },
     ),
     GeoTrackStopSensorDescription(
         key="message",
