@@ -32,7 +32,9 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
-STORAGE_KEY = f"{DOMAIN}.arrivals"
+# Keyed by distance band since 3.0.0. The pre-3.0.0 file used the same shape
+# with stop numbers as keys, so it must not be read back as distances.
+STORAGE_KEY = f"{DOMAIN}.arrivals_by_distance"
 SAVE_DELAY = 300
 
 type GeoTrackConfigEntry = ConfigEntry[GeoTrackCoordinator]
