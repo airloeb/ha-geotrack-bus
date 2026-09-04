@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import Bus, Stop
+from .api import STATUS_APPROACHING, STATUS_AT_STOP, Bus, Stop
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import GeoTrackCoordinator
 
@@ -69,12 +69,37 @@ class GeoTrackStopEntity(CoordinatorEntity[GeoTrackCoordinator]):
 
     @property
     def _pair(self) -> tuple[Bus, Stop] | None:
-        """The bus currently serving this stop, and the stop itself."""
-        for bus in (self.coordinator.data or {}).values():
-            for stop in bus.stops:
-                if stop.key == self._stop_key:
-                    return bus, stop
-        return None
+        """The most relevant bus for this stop, and the stop as it reports it.
+
+        One stop can be served by several buses -- two children, each with a
+        morning and an afternoon run -- and the coordinator keeps buses that
+        have gone quiet so their last position stays visible. Taking the first
+        match would therefore surface whichever bus was seen first that day: all
+        afternoon the stop would still show the morning bus's "already passed",
+        and no warning would ever fire.
+
+        Prefer a bus still working towards the stop, then the one arriving
+        soonest, then the most recently heard from.
+        """
+        candidates = [
+            (bus, stop)
+            for bus in (self.coordinator.data or {}).values()
+            for stop in bus.stops
+            if stop.key == self._stop_key
+        ]
+        if not candidates:
+            return None
+
+        def rank(pair: tuple[Bus, Stop]) -> tuple[int, float, float, float]:
+            bus, stop = pair
+            active = stop.status in (STATUS_APPROACHING, STATUS_AT_STOP)
+            eta = stop.eta_minutes if stop.eta_minutes is not None else float("inf")
+            distance = stop.distance_m if stop.distance_m is not None else float("inf")
+            seen = bus.last_update.timestamp() if bus.last_update else 0.0
+            # Ascending sort, so negate where "more" means "better".
+            return (0 if active else 1, eta, distance, -seen)
+
+        return min(candidates, key=rank)
 
     @property
     def bus(self) -> Bus | None:

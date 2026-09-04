@@ -37,6 +37,8 @@ STORAGE_VERSION = 1
 # with stop numbers as keys, so it must not be read back as distances.
 STORAGE_KEY = f"{DOMAIN}.arrivals_by_distance"
 SAVE_DELAY = 300
+# A bus absent from the feed this long is no longer worth showing.
+STALE_AFTER = timedelta(hours=3)
 
 type GeoTrackConfigEntry = ConfigEntry[GeoTrackCoordinator]
 
@@ -173,7 +175,17 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
         self._apply_eta(buses)
 
         # Buses drop out of the feed between runs; keep the last known state so
-        # entities go stale rather than disappearing entirely.
+        # a position stays visible rather than vanishing. But drop anything that
+        # has gone quiet for hours, or a morning bus would still be sitting in
+        # the data at bedtime claiming it had just passed the stop.
         merged = dict(self.data or {})
         merged.update({bus.bus_id: bus for bus in buses})
+
+        current = {bus.bus_id for bus in buses}
+        cutoff = dt_util.utcnow() - STALE_AFTER
+        for bus_id, bus in list(merged.items()):
+            if bus_id in current:
+                continue
+            if bus.last_update is None or bus.last_update < cutoff:
+                del merged[bus_id]
         return merged
