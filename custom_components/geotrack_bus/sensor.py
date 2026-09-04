@@ -161,10 +161,19 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         suggested_display_precision=0,
         value_fn=lambda bus, stop: stop.eta_minutes,
         attributes_fn=lambda bus, stop: {
-            "seconds_per_stop": stop.seconds_per_stop,
-            "samples": stop.eta_samples,
-            "estimate_quality": "measured" if stop.eta_learned else "default",
+            "runs_measured": stop.eta_runs,
+            "warning_stop_number": stop.warning_stop_number,
+            "route": stop.route,
         },
+    ),
+    GeoTrackStopSensorDescription(
+        key="runs_measured",
+        translation_key="runs_measured",
+        icon="mdi:school-outline",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="runs",
+        value_fn=lambda bus, stop: stop.eta_runs,
+        attributes_fn=lambda bus, stop: {"warning_stop_number": stop.warning_stop_number},
     ),
     GeoTrackStopSensorDescription(
         key="message",

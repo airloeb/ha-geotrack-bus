@@ -14,21 +14,25 @@ from homeassistant.util import dt as dt_util
 
 from .api import (
     STATUS_APPROACHING,
+    STATUS_PASSED,
+    ArrivalLearner,
     Bus,
     GeoTrackApi,
     GeoTrackAuthError,
     GeoTrackConnectionError,
-    MAX_STOP_SECONDS,
-    MIN_STOP_SECONDS,
-    ETA_SAMPLE_WINDOW,
-    StopPace,
+    parse_passed_at,
 )
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import (
+    CONF_WARNING_MINUTES,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_WARNING_MINUTES,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
-STORAGE_KEY = f"{DOMAIN}.pace"
+STORAGE_KEY = f"{DOMAIN}.arrivals"
 SAVE_DELAY = 300
 
 type GeoTrackConfigEntry = ConfigEntry[GeoTrackCoordinator]
@@ -55,47 +59,65 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
             update_interval=timedelta(seconds=scan_interval),
         )
         self.api = api
-        self._pace: dict[str, StopPace] = {}
+        self._learners: dict[str, ArrivalLearner] = {}
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
 
-    async def async_load_pace(self) -> None:
-        """Restore measured stop-to-stop times from a previous run."""
+    async def async_load_history(self) -> None:
+        """Restore measured lead times from previous runs."""
         stored = await self._store.async_load()
         if not stored:
             return
-        for key, samples in stored.items():
-            pace = StopPace()
-            pace.samples.extend(
-                float(s) for s in samples[-ETA_SAMPLE_WINDOW:]
-                if MIN_STOP_SECONDS <= float(s) <= MAX_STOP_SECONDS
-            )
-            self._pace[key] = pace
-        _LOGGER.debug("Restored pace data for %d stop(s)", len(self._pace))
+        for key, payload in stored.items():
+            self._learners[key] = ArrivalLearner.from_json(payload)
+        _LOGGER.debug("Restored arrival history for %d stop(s)", len(self._learners))
 
-    def _save_pace(self) -> None:
-        """Persist measured times so an ETA survives a restart."""
+    def _save_history(self) -> None:
+        """Persist measured lead times so the estimate survives a restart."""
         self._store.async_delay_save(
-            lambda: {k: list(v.samples) for k, v in self._pace.items() if v.samples},
+            lambda: {k: v.to_json() for k, v in self._learners.items() if v.leads},
             SAVE_DELAY,
         )
 
     def _apply_eta(self, buses: list[Bus]) -> None:
-        """Time each bus's progress and turn stops-away into minutes."""
-        now = dt_util.utcnow()
+        """Learn from this poll, then express stops-away as minutes."""
+        now = dt_util.now()
+        threshold = float(
+            self.config_entry.options.get(
+                CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+            )
+        ) * 60
+
         for bus in buses:
             for stop in bus.stops:
-                key = f"{bus.bus_id}:{stop.key}"
-                pace = self._pace.setdefault(key, StopPace())
-                pace.observe(stop.current_stop_number, now)
+                learner = self._learners.setdefault(
+                    f"{bus.bus_id}:{stop.key}", ArrivalLearner()
+                )
+                route = stop.route
 
-                stop.seconds_per_stop = round(pace.seconds_per_stop, 1)
-                stop.eta_samples = len(pace.samples)
-                stop.eta_learned = pace.learned
-                if stop.status == STATUS_APPROACHING and stop.stops_away is not None:
-                    stop.eta_minutes = round(
-                        stop.stops_away * pace.seconds_per_stop / 60, 1
+                if stop.status == STATUS_APPROACHING:
+                    learner.observe(route, stop.current_stop_number, now)
+                elif stop.status == STATUS_PASSED and stop.passed_at:
+                    # The portal states when the bus reached our stop, which is
+                    # a better arrival time than anything we could infer from
+                    # poll timing. Closing the run turns it into lead times.
+                    arrived = parse_passed_at(stop.passed_at, now)
+                    if arrived is not None:
+                        kept = learner.record_arrival(route, arrived)
+                        if kept:
+                            _LOGGER.debug(
+                                "Learned %d lead time(s) for bus %s stop %s on route %s",
+                                kept, bus.bus_number, stop.stop_number, route,
+                            )
+
+                stop.eta_runs = learner.runs_recorded(route)
+                stop.warning_stop_number = learner.warning_stop(route, threshold)
+                if stop.status == STATUS_APPROACHING:
+                    seconds = learner.eta_seconds(route, stop.current_stop_number)
+                    stop.eta_minutes = (
+                        round(seconds / 60, 1) if seconds is not None else None
                     )
-        self._save_pace()
+
+        self._save_history()
 
     async def _async_update_data(self) -> dict[int, Bus]:
         """Fetch the current position of every bus on the account."""

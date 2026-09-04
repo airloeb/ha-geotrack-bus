@@ -35,7 +35,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GeoTrackConfigEntry) -> 
         api,
         entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
     )
-    await coordinator.async_load_pace()
+    await coordinator.async_load_history()
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator

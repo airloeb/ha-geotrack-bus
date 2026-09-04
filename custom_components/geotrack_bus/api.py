@@ -19,13 +19,13 @@ VEHICLES_PATH = "/Map/GetVehicles"
 LOGIN_PATH = "/Account/Login"
 VERIFY_PATH = "/Account/SecondStepVerification"
 
-# ETA tuning. The portal publishes no arrival time, so minutes are derived from
-# how long this bus actually takes between stops.
-DEFAULT_SECONDS_PER_STOP = 70.0
-MIN_STOP_SECONDS = 8.0
-MAX_STOP_SECONDS = 600.0
-ETA_SAMPLE_WINDOW = 40
-ETA_MIN_SAMPLES = 3
+# ETA tuning. The portal publishes no arrival time, so it is learned: on each
+# run we note when the bus first reached every stop number, and once it reaches
+# our stop the portal tells us when that happened. The difference is the lead
+# time for that stop number. Nothing is assumed about how long a stop takes.
+MAX_LEAD_SECONDS = 7200.0   # anything further out than 2h is a mis-paired run
+MIN_LEAD_SECONDS = 1.0
+LEAD_SAMPLE_WINDOW = 20     # runs kept per stop number
 
 COMMUNICATION_SMS = "SMS"
 COMMUNICATION_CALL = "PhoneCall"
@@ -154,9 +154,8 @@ class Stop:
     status: str
     # Filled in by the coordinator, which is what watches the bus over time.
     eta_minutes: float | None = None
-    seconds_per_stop: float | None = None
-    eta_samples: int = 0
-    eta_learned: bool = False
+    eta_runs: int = 0
+    warning_stop_number: int | None = None
 
     @property
     def key(self) -> str:
@@ -218,49 +217,158 @@ class Stop:
         )
 
 
-@dataclass(slots=True)
-class StopPace:
-    """How long this bus takes between consecutive stops.
+def parse_passed_at(passed_at: str, now: datetime) -> datetime | None:
+    """Turn the portal's "4:20 PM" into a datetime on the right day."""
+    text = passed_at.strip().upper().replace(" ", "")
+    for fmt in ("%I:%M%p", "%I:%M:%S%p"):
+        try:
+            parsed = datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+        stamp = now.replace(
+            hour=parsed.hour, minute=parsed.minute,
+            second=getattr(parsed, "second", 0), microsecond=0,
+        )
+        # A time that looks far in the future belongs to yesterday's run.
+        if stamp - now > timedelta(hours=12):
+            stamp -= timedelta(days=1)
+        return stamp
+    return None
 
-    The portal publishes no ETA — only which stop the bus is working on — so the
-    only way to turn "8 stops away" into minutes is to time the bus ourselves.
+
+@dataclass(slots=True)
+class ArrivalLearner:
+    """Learns how far ahead of arrival the bus passes each stop number.
+
+    The portal gives no ETA, so we measure one. During a run we note the first
+    moment the bus is reported working each stop number. When it finally reaches
+    our stop the portal states the time it did so, and the gap back to each of
+    those moments is that stop number's lead time. Averaged over runs, "the bus
+    is at stop 8" becomes "about six minutes away" — with no assumption that
+    stops are evenly spaced or evenly slow.
+
+    Lead times are kept per route code, so a morning route and an afternoon
+    route never contaminate each other.
     """
 
-    samples: deque[float] = field(
-        default_factory=lambda: deque(maxlen=ETA_SAMPLE_WINDOW)
-    )
-    last_stop: int | None = None
-    last_seen: datetime | None = None
+    # route -> stop number -> recent lead times, in seconds
+    leads: dict[str, dict[int, deque[float]]] = field(default_factory=dict)
+    run_route: str | None = None
+    first_seen: dict[int, datetime] = field(default_factory=dict)
 
-    @property
-    def seconds_per_stop(self) -> float:
-        """Average seconds between stops, falling back to a sane default."""
-        if not self.samples:
-            return DEFAULT_SECONDS_PER_STOP
-        return sum(self.samples) / len(self.samples)
+    ROUTE_UNKNOWN = "_"
 
-    @property
-    def learned(self) -> bool:
-        """Whether enough gaps have been timed to trust the average."""
-        return len(self.samples) >= ETA_MIN_SAMPLES
+    @staticmethod
+    def _route_key(route: str | None) -> str:
+        return route or ArrivalLearner.ROUTE_UNKNOWN
 
-    def observe(self, current_stop: int | None, now: datetime) -> None:
-        """Record where the bus is, timing the gap since the previous stop."""
+    def observe(self, route: str | None, current_stop: int | None, now: datetime) -> None:
+        """Note where the bus is, starting a fresh run if the route changed."""
         if current_stop is None:
             return
+        key = self._route_key(route)
+        if key != self.run_route:
+            self.run_route = key
+            self.first_seen = {}
+        # Only the first sighting at a stop number counts; later polls at the
+        # same stop would understate the lead.
+        self.first_seen.setdefault(current_stop, now)
 
-        previous, seen = self.last_stop, self.last_seen
-        self.last_stop, self.last_seen = current_stop, now
+    def record_arrival(self, route: str | None, arrived_at: datetime) -> int:
+        """Convert the finished run into lead times. Returns how many were kept."""
+        key = self._route_key(route)
+        if not self.first_seen:
+            return 0
+        table = self.leads.setdefault(key, {})
+        kept = 0
+        for stop_number, seen in self.first_seen.items():
+            lead = (arrived_at - seen).total_seconds()
+            if MIN_LEAD_SECONDS <= lead <= MAX_LEAD_SECONDS:
+                table.setdefault(stop_number, deque(maxlen=LEAD_SAMPLE_WINDOW)).append(lead)
+                kept += 1
+        # Consume the run so a repeated "passed" poll cannot double-count it.
+        self.first_seen = {}
+        return kept
 
-        if previous is None or seen is None or current_stop <= previous:
-            # No baseline, or the numbering went backwards because a new run
-            # started. Either way there is no gap worth timing.
-            return
+    def _mean(self, route_table: dict[int, deque[float]], stop_number: int) -> float | None:
+        samples = route_table.get(stop_number)
+        if not samples:
+            return None
+        return sum(samples) / len(samples)
 
-        advanced = current_stop - previous
-        per_stop = (now - seen).total_seconds() / advanced
-        if MIN_STOP_SECONDS <= per_stop <= MAX_STOP_SECONDS:
-            self.samples.append(per_stop)
+    def eta_seconds(self, route: str | None, current_stop: int | None) -> float | None:
+        """Estimated seconds to our stop, or None if this stop is unmeasured."""
+        if current_stop is None:
+            return None
+        table = self.leads.get(self._route_key(route))
+        if not table:
+            return None
+
+        exact = self._mean(table, current_stop)
+        if exact is not None:
+            return exact
+
+        # Interpolate between the nearest measured stop numbers either side.
+        # Never extrapolate: outside the measured range we simply do not know.
+        lower = max((s for s in table if s < current_stop), default=None)
+        upper = min((s for s in table if s > current_stop), default=None)
+        if lower is None or upper is None:
+            return None
+        low_v, high_v = self._mean(table, lower), self._mean(table, upper)
+        if low_v is None or high_v is None:
+            return None
+        span = upper - lower
+        return low_v + (high_v - low_v) * ((current_stop - lower) / span)
+
+    def warning_stop(self, route: str | None, threshold_seconds: float) -> int | None:
+        """The stop number at which the bus first falls inside the warning window."""
+        table = self.leads.get(self._route_key(route))
+        if not table:
+            return None
+        candidates = [
+            s for s in sorted(table)
+            if (m := self._mean(table, s)) is not None and m <= threshold_seconds
+        ]
+        return candidates[0] if candidates else None
+
+    def runs_recorded(self, route: str | None) -> int:
+        """How many runs have contributed, judged by the best-sampled stop."""
+        table = self.leads.get(self._route_key(route))
+        if not table:
+            return 0
+        return max((len(v) for v in table.values()), default=0)
+
+    def to_json(self) -> dict[str, dict[str, list[float]]]:
+        """Serialise for Home Assistant's storage helper."""
+        return {
+            route: {str(stop): list(vals) for stop, vals in table.items() if vals}
+            for route, table in self.leads.items()
+            if table
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> ArrivalLearner:
+        """Restore from storage, discarding anything malformed."""
+        learner = cls()
+        for route, table in (data or {}).items():
+            restored: dict[int, deque[float]] = {}
+            for stop, vals in (table or {}).items():
+                try:
+                    number = int(stop)
+                except (TypeError, ValueError):
+                    continue
+                good = [
+                    float(v) for v in vals
+                    if isinstance(v, (int, float))
+                    and MIN_LEAD_SECONDS <= float(v) <= MAX_LEAD_SECONDS
+                ]
+                if good:
+                    restored[number] = deque(good[-LEAD_SAMPLE_WINDOW:],
+                                             maxlen=LEAD_SAMPLE_WINDOW)
+            if restored:
+                learner.leads[route] = restored
+        return learner
+
 
 @dataclass(slots=True)
 class Bus:

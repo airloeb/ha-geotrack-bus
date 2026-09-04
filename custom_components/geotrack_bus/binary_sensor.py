@@ -43,8 +43,13 @@ BUS_BINARY_SENSORS: tuple[GeoTrackBusBinaryDescription, ...] = (
     ),
 )
 
-def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool | None:
-    """Whether the bus is within the user's warning window of this stop."""
+def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool:
+    """Whether the bus is inside the warning window.
+
+    Stays off until this route has been watched through at least one complete
+    run; nothing is assumed about how long stops take, so before that there is
+    genuinely no estimate to act on.
+    """
     if stop.status != STATUS_APPROACHING or stop.eta_minutes is None:
         return False
     threshold = coordinator.config_entry.options.get(
@@ -175,5 +180,7 @@ class GeoTrackStopBinarySensor(GeoTrackStopEntity, BinarySensorEntity):
             "warning_minutes": self.coordinator.config_entry.options.get(
                 CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
             ),
-            "estimate_quality": "measured" if stop.eta_learned else "default",
+            "warning_stop_number": stop.warning_stop_number,
+            "runs_measured": stop.eta_runs,
+            "route": stop.route,
         }

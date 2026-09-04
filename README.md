@@ -30,8 +30,9 @@ Then, for each of **your** stops on that bus (one set per child/stop):
 | `sensor.bus_123_stop_9_status` | `approaching` | `approaching` / `at_stop` / `passed` / `unknown` |
 | `sensor.bus_123_stop_9_distance` | `4.1 mi` | straight-line bus→stop distance |
 | `sensor.bus_123_stop_9_message` | the portal's own wording | |
-| `sensor.bus_123_stop_9_eta` | `15 min` | estimated; see below |
-| `binary_sensor.bus_123_stop_9_arriving_soon` | `on` / `off` | on when the ETA is within your warning window |
+| `sensor.bus_123_stop_9_eta` | `15 min` | learned from past runs; unknown until one completes |
+| `binary_sensor.bus_123_stop_9_arriving_soon` | `on` / `off` | on when the learned ETA is inside your warning window |
+| `sensor.bus_123_stop_9_runs_measured` | `3` | how many complete runs the estimate is based on |
 | `binary_sensor.bus_123_stop_9_bus_at_stop` | `on` / `off` | |
 | `binary_sensor.bus_123_stop_9_already_passed` | `on` / `off` | resets when the portal starts a new run |
 
@@ -82,29 +83,48 @@ notification and offers both routes again. The portal sets a persistent device
 cookie, so this is infrequent — but it will happen eventually, and it will happen
 if you sign out in that browser.
 
-## The ETA is estimated, not published
+## The ETA is learned, not assumed
 
 The portal reports only which stop the bus is working on — *"is before stop
-number 1, Your stop number is 13"*. It has no arrival time to give, so the
-integration measures one.
+number 1, Your stop number is 13"*. It has no arrival time to give, and this
+integration does not invent one from an assumed pace.
 
-Each time the bus advances a stop, the gap is timed and kept in a rolling
-average of the last 40 gaps, per bus and stop. The ETA is then simply
-`stops_away × average seconds per stop`. Gaps shorter than 8 s or longer than
-10 min are discarded as noise (a missed poll, a depot wait, a run starting
-mid-route), and a run restarting its stop numbering does not record a gap.
+Instead it watches. During a run it records the first moment the bus is
+reported at each stop number. When the bus finally reaches your stop, the
+portal states the time it got there (*"was by your stop at 4:20 PM"*), and the
+gap back to each of those moments becomes that stop number's **lead time**.
+So "the bus is at stop 8" turns into "about six minutes away" because that is
+what stop 8 has actually meant on this route, not because stops are assumed to
+take any particular length of time.
 
-Until three gaps have been timed, a 70 s/stop default stands in and the ETA
-sensor's `estimate_quality` attribute reads `default` rather than `measured`.
-Averages persist across restarts.
+This matters because stops are not evenly spaced. On a route whose early stops
+crawl and late stops fly, a flat seconds-per-stop average put the five-minute
+warning three stops too late.
 
-`binary_sensor.<bus>_<stop>_arriving_soon` turns on when the ETA falls within
-the warning window set under **Configure** (default 5 minutes) — that is the
-entity to build a "leave the house now" notification on.
+Details:
 
-Treat it as a decent guess, not a guarantee: it assumes the remaining stops
-behave like the recent ones, and knows nothing about traffic or an unusually
-long boarding.
+- Lead times are stored **per route code**, so a morning route and an afternoon
+  route never contaminate each other.
+- The last 20 runs per stop number are averaged; older ones age out.
+- An unmeasured stop number is interpolated between its measured neighbours,
+  but never extrapolated beyond the measured range — outside it, the ETA is
+  simply unknown.
+- Everything persists across restarts.
+
+**Cold start: there is no ETA until a route has been watched through one
+complete run.** `sensor.<bus>_<stop>_eta` stays unknown and
+`binary_sensor.<bus>_<stop>_arriving_soon` stays off, so no warning fires on
+day one. `sensor.<bus>_<stop>_runs_measured` shows how many runs have been
+banked, and the `warning_stop_number` attribute tells you which stop the
+warning will fire at once it has learned. Accuracy improves over the first
+few runs as the average fills in.
+
+`arriving_soon` turns on when the learned ETA falls inside the window set under
+**Configure** (default 5 minutes) — that is the entity to hang a "leave the
+house now" notification on.
+
+It is still an estimate: it assumes today's run resembles recent ones, and
+knows nothing about traffic or an unusually long boarding.
 
 ## Polling
 

@@ -73,7 +73,7 @@
         },
         "data_description": {
           "scan_interval": "How often to poll the portal. The portal itself refreshes roughly every 20 seconds.",
-          "warning_minutes": "The ETA is estimated from how long this bus actually takes between stops, measured over time. The portal itself publishes no arrival time."
+          "warning_minutes": "The portal publishes no arrival time. It is learned: each run records when the bus first reached every stop number, and the portal states when it reached yours. Until a route has been watched through one full run there is no estimate, and no warning fires."
         }
       }
     }
@@ -116,6 +116,9 @@
       },
       "eta": {
         "name": "{stop} ETA"
+      },
+      "runs_measured": {
+        "name": "{stop} runs measured"
       }
     },
     "binary_sensor": {
