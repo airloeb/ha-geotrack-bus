@@ -1,12 +1,17 @@
-# School Bus dashboard
+# School Bus dashboard — real entity ids, confirmed live 2026-09-04.
 #
 # To use: Settings -> Dashboards -> + Add Dashboard -> New dashboard from scratch
 # ("School Bus", icon mdi:bus-school). Open it, then top-right pencil -> ⋮ ->
 # "Raw configuration editor", and paste everything below.
 #
-# Entity ids assume bus 399 / your stop 13 and bus P123 / your stop 7 — the two
-# buses your account reported. If tomorrow's run shows different ones, the cards
-# will read "Entity not available"; send me the real names and I'll correct them.
+# Bus 351 (route BEMTR31A) serves your stop 1.
+# Bus 259 (route OBYHS1A)  serves your stop 3.
+#
+# ETA is learned by timing how long before arrival the bus was at each distance
+# from your stop, anchored on the portal's own "was by your stop at ..." time.
+# It reads unknown until a route has been watched through one complete run, and
+# "Runs measured" shows how much has been banked. Outside school hours every
+# card reads unavailable — that is normal.
 
 views:
   - title: School Bus
@@ -15,68 +20,72 @@ views:
     cards:
       - type: markdown
         content: >-
-          Buses appear only while they are on a run. Outside school hours these
-          cards read *unavailable* — that is normal, not a fault.
+          Buses report only while on a run. Outside school hours these cards
+          read *unavailable*.
 
 
-          `Last report` shows how fresh a position really is.
-
-      - type: vertical-stack
-        cards:
-          - type: map
-            entities:
-              - device_tracker.bus_399
-            hours_to_show: 1
-            theme_mode: auto
-          - type: entities
-            title: Bus 399 — Stop 13
-            entities:
-              - entity: sensor.bus_399_stop_13_eta
-                name: ETA
-              - entity: binary_sensor.bus_399_stop_13_arriving_soon
-                name: Arriving soon
-              - entity: sensor.bus_399_stop_13_status
-                name: Status
-              - entity: sensor.bus_399_stop_13_stops_away
-                name: Stops away
-              - entity: sensor.bus_399_stop_13_distance
-                name: Distance to stop
-              - type: divider
-              - entity: sensor.bus_399_speed
-                name: Speed
-              - entity: sensor.bus_399_current_address
-                name: Now near
-              - entity: sensor.bus_399_route
-                name: Route
-              - entity: sensor.bus_399_last_report
-                name: Last report
+          **ETA** is learned from past runs — it is unknown until one completes.
+          Check *Runs measured* to see how much it has to go on, and the
+          `warning_at_miles` attribute for how far out the alert will fire.
 
       - type: vertical-stack
         cards:
           - type: map
             entities:
-              - device_tracker.bus_p123
-            hours_to_show: 1
+              - device_tracker.bus_351
+            hours_to_show: 2
             theme_mode: auto
           - type: entities
-            title: Bus P123 — Stop 7
+            title: Bus 351 — Stop 1 (route BEMTR31A)
             entities:
-              - entity: sensor.bus_p123_stop_7_eta
+              - entity: sensor.bus_351_stop_1_eta
                 name: ETA
-              - entity: binary_sensor.bus_p123_stop_7_arriving_soon
+              - entity: binary_sensor.bus_351_stop_1_arriving_soon
                 name: Arriving soon
-              - entity: sensor.bus_p123_stop_7_status
+              - entity: sensor.bus_351_stop_1_status
                 name: Status
-              - entity: sensor.bus_p123_stop_7_stops_away
-                name: Stops away
-              - entity: sensor.bus_p123_stop_7_distance
+              - entity: sensor.bus_351_stop_1_distance
                 name: Distance to stop
+              - entity: sensor.bus_351_stop_1_runs_measured
+                name: Runs measured
               - type: divider
-              - entity: sensor.bus_p123_speed
+              - entity: sensor.bus_351_speed
                 name: Speed
-              - entity: sensor.bus_p123_current_address
+              - entity: sensor.bus_351_current_address
                 name: Now near
-              - entity: sensor.bus_p123_route
-                name: Route
-              - entity: sensor.bus_p123_last_report
+              - entity: sensor.bus_351_last_report
                 name: Last report
+              - entity: binary_sensor.bus_351_stop_1_already_passed
+                name: Already passed
+
+      - type: vertical-stack
+        cards:
+          - type: map
+            entities:
+              - device_tracker.bus_259
+            hours_to_show: 2
+            theme_mode: auto
+          - type: entities
+            title: Bus 259 — Stop 3 (route OBYHS1A)
+            entities:
+              - entity: sensor.bus_259_stop_3_eta
+                name: ETA
+              - entity: binary_sensor.bus_259_stop_3_arriving_soon
+                name: Arriving soon
+              - entity: sensor.bus_259_stop_3_status
+                name: Status
+              - entity: sensor.bus_259_stop_3_stops_away
+                name: Stops away
+              - entity: sensor.bus_259_stop_3_distance
+                name: Distance to stop
+              - entity: sensor.bus_259_stop_3_runs_measured
+                name: Runs measured
+              - type: divider
+              - entity: sensor.bus_259_speed
+                name: Speed
+              - entity: sensor.bus_259_current_address
+                name: Now near
+              - entity: sensor.bus_259_last_report
+                name: Last report
+              - entity: binary_sensor.bus_259_stop_3_already_passed
+                name: Already passed
