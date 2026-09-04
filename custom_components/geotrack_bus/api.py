@@ -51,7 +51,7 @@ _DOTNET_DATE_RE = re.compile(r"^/Date\((-?\d+)(?:([+-])(\d{2})(\d{2}))?\)/$")
 _BUS_IN_LINE_RE = re.compile(r"^\s*bus\s+(\S+?)\s*,", re.IGNORECASE)
 _ROUTE_RE = re.compile(r"Route:\s*(\S+)")
 _BEFORE_STOP_RE = re.compile(r"before stop number\s*(\d+)", re.IGNORECASE)
-# "has passed stop number 1, 488 Old Whitesville Road at 11:36 AM" -- progress
+# "has passed stop number 4, 1 Example Rd at 11:36 AM" -- progress
 # through the route. The time is when it cleared THAT stop, not ours.
 _PASSED_STOP_RE = re.compile(
     r"has passed stop number\s*(\d+)\s*,\s*(.*?)\s+at\s+"
