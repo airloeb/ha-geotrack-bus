@@ -95,7 +95,7 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
                 route = stop.route
 
                 if stop.status == STATUS_APPROACHING:
-                    learner.observe(route, stop.current_stop_number, now)
+                    learner.observe(route, stop.distance_m, now)
                 elif stop.status == STATUS_PASSED and stop.passed_at:
                     # The portal states when the bus reached our stop, which is
                     # a better arrival time than anything we could infer from
@@ -105,14 +105,14 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
                         kept = learner.record_arrival(route, arrived)
                         if kept:
                             _LOGGER.debug(
-                                "Learned %d lead time(s) for bus %s stop %s on route %s",
+                                "Learned %d distance band(s) for bus %s stop %s on route %s",
                                 kept, bus.bus_number, stop.stop_number, route,
                             )
 
                 stop.eta_runs = learner.runs_recorded(route)
-                stop.warning_stop_number = learner.warning_stop(route, threshold)
+                stop.warning_distance_m = learner.warning_distance_m(route, threshold)
                 if stop.status == STATUS_APPROACHING:
-                    seconds = learner.eta_seconds(route, stop.current_stop_number)
+                    seconds = learner.eta_seconds(route, stop.distance_m)
                     stop.eta_minutes = (
                         round(seconds / 60, 1) if seconds is not None else None
                     )

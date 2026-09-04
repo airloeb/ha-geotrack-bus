@@ -30,7 +30,7 @@ Then, for each of **your** stops on that bus (one set per child/stop):
 | `sensor.bus_123_stop_9_status` | `approaching` | `approaching` / `at_stop` / `passed` / `unknown` |
 | `sensor.bus_123_stop_9_distance` | `4.1 mi` | straight-line bus→stop distance |
 | `sensor.bus_123_stop_9_message` | the portal's own wording | |
-| `sensor.bus_123_stop_9_eta` | `15 min` | learned from past runs; unknown until one completes |
+| `sensor.bus_123_stop_9_eta` | `8 min` | learned from past runs; unknown until one completes |
 | `binary_sensor.bus_123_stop_9_arriving_soon` | `on` / `off` | on when the learned ETA is inside your warning window |
 | `sensor.bus_123_stop_9_runs_measured` | `3` | how many complete runs the estimate is based on |
 | `binary_sensor.bus_123_stop_9_bus_at_stop` | `on` / `off` | |
@@ -85,46 +85,60 @@ if you sign out in that browser.
 
 ## The ETA is learned, not assumed
 
-The portal reports only which stop the bus is working on — *"is before stop
-number 1, Your stop number is 13"*. It has no arrival time to give, and this
-integration does not invent one from an assumed pace.
+The portal reports only which stop the bus is working on and where the vehicle
+is. It has no arrival time to give, and this integration does not invent one
+from an assumed pace.
 
-Instead it watches. During a run it records the first moment the bus is
-reported at each stop number. When the bus finally reaches your stop, the
-portal states the time it got there (*"was by your stop at 4:20 PM"*), and the
-gap back to each of those moments becomes that stop number's **lead time**.
-So "the bus is at stop 8" turns into "about six minutes away" because that is
-what stop 8 has actually meant on this route, not because stops are assumed to
-take any particular length of time.
+Instead it watches. Through a run it records when the bus is seen in each 400 m
+band of distance from your stop. When the bus reaches your stop, the portal
+states the time it got there (*"was by your stop at 8:55 AM"*), and the gap back
+to each of those sightings becomes that band's **lead time**. "The bus is 1.2
+miles out" then means whatever 1.2 miles has actually meant on this route.
 
-This matters because stops are not evenly spaced. On a route whose early stops
-crawl and late stops fly, a flat seconds-per-stop average put the five-minute
-warning three stops too late.
+**Why distance and not stop number.** If your stop is number 1 on its route,
+the portal only ever says *"is before stop number 1"* — the same string whether
+the bus is five miles away or turning into your street. Stops-away is
+structurally 0 and carries no information. Distance keeps resolving all the way
+to the door, and works the same for any stop position.
 
 Details:
 
 - Lead times are stored **per route code**, so a morning route and an afternoon
   route never contaminate each other.
-- The last 20 runs per stop number are averaged; older ones age out.
-- An unmeasured stop number is interpolated between its measured neighbours,
-  but never extrapolated beyond the measured range — outside it, the ETA is
-  simply unknown.
+- One figure per run per band, so a bus idling in one band cannot outvote the
+  bands either side of it. The last 20 runs are averaged.
+- An unmeasured band is interpolated between its measured neighbours, but never
+  extrapolated beyond the measured range — outside it, the ETA is unknown.
 - Everything persists across restarts.
 
 **Cold start: there is no ETA until a route has been watched through one
 complete run.** `sensor.<bus>_<stop>_eta` stays unknown and
-`binary_sensor.<bus>_<stop>_arriving_soon` stays off, so no warning fires on
-day one. `sensor.<bus>_<stop>_runs_measured` shows how many runs have been
-banked, and the `warning_stop_number` attribute tells you which stop the
-warning will fire at once it has learned. Accuracy improves over the first
-few runs as the average fills in.
+`binary_sensor.<bus>_<stop>_arriving_soon` stays off, so no warning fires on day
+one. `sensor.<bus>_<stop>_runs_measured` shows how many runs are banked, and the
+`warning_at_miles` attribute says how far out the warning will fire.
 
 `arriving_soon` turns on when the learned ETA falls inside the window set under
 **Configure** (default 5 minutes) — that is the entity to hang a "leave the
 house now" notification on.
 
-It is still an estimate: it assumes today's run resembles recent ones, and
-knows nothing about traffic or an unusually long boarding.
+It is still an estimate: it assumes today's run resembles recent ones, and knows
+nothing about traffic or an unusually long boarding.
+
+## One message, many stops
+
+Each Response the portal returns carries a line for *every* stop on the account,
+and vehicles return Responses for stops served by other buses. So a single
+Message may read:
+
+```
+bus 123, Route: ABC12P is before stop number 1, Your stop number is 1
+bus 456, Route: XYZ34P is before stop number 1, Your stop number is 3
+```
+
+The integration picks the line whose *"Your stop number is N"* matches the
+Response, and drops the Response entirely when the line names a different bus.
+Without that, stops inherit the wrong route code and phantom stop entities
+appear under buses that do not serve them.
 
 ## Polling
 

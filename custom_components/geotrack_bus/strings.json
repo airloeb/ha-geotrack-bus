@@ -73,7 +73,7 @@
         },
         "data_description": {
           "scan_interval": "How often to poll the portal. The portal itself refreshes roughly every 20 seconds.",
-          "warning_minutes": "The portal publishes no arrival time. It is learned: each run records when the bus first reached every stop number, and the portal states when it reached yours. Until a route has been watched through one full run there is no estimate, and no warning fires."
+          "warning_minutes": "The portal publishes no arrival time. It is learned: each run records how long before arrival the bus was at each distance from your stop, anchored on the portal's own \"was by your stop at ...\" time. Until a route has been watched through one full run there is no estimate, and no warning fires."
         }
       }
     }

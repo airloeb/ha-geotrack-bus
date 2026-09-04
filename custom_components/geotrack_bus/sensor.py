@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -39,7 +38,6 @@ COMPASS = (
     "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
 )
 
-EARTH_RADIUS_M = 6371000.0
 
 
 def _compass(bearing: int | None) -> str | None:
@@ -49,16 +47,11 @@ def _compass(bearing: int | None) -> str | None:
     return COMPASS[round(bearing % 360 / 22.5) % 16]
 
 
-def _distance_m(
-    lat1: float | None, lon1: float | None, lat2: float | None, lon2: float | None
-) -> float | None:
-    """Great-circle distance in metres between two positions."""
-    if None in (lat1, lon1, lat2, lon2):
+def _miles(metres: float | None) -> float | None:
+    """Metres as miles, for attributes a human will read."""
+    if metres is None:
         return None
-    p1, p2 = radians(lat1), radians(lat2)
-    dp, dl = p2 - p1, radians(lon2 - lon1)
-    a = sin(dp / 2) ** 2 + cos(p1) * cos(p2) * sin(dl / 2) ** 2
-    return round(2 * EARTH_RADIUS_M * asin(sqrt(a)), 1)
+    return round(metres / 1609.344, 2)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -148,9 +141,7 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.METERS,
         suggested_unit_of_measurement=UnitOfLength.MILES,
         suggested_display_precision=2,
-        value_fn=lambda bus, stop: _distance_m(
-            bus.latitude, bus.longitude, stop.latitude, stop.longitude
-        ),
+        value_fn=lambda bus, stop: stop.distance_m,
     ),
     GeoTrackStopSensorDescription(
         key="eta",
@@ -162,7 +153,7 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         value_fn=lambda bus, stop: stop.eta_minutes,
         attributes_fn=lambda bus, stop: {
             "runs_measured": stop.eta_runs,
-            "warning_stop_number": stop.warning_stop_number,
+            "warning_at_miles": _miles(stop.warning_distance_m),
             "route": stop.route,
         },
     ),
@@ -173,7 +164,7 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="runs",
         value_fn=lambda bus, stop: stop.eta_runs,
-        attributes_fn=lambda bus, stop: {"warning_stop_number": stop.warning_stop_number},
+        attributes_fn=lambda bus, stop: {"warning_at_miles": _miles(stop.warning_distance_m)},
     ),
     GeoTrackStopSensorDescription(
         key="message",

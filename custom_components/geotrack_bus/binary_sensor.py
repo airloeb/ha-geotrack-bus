@@ -180,7 +180,14 @@ class GeoTrackStopBinarySensor(GeoTrackStopEntity, BinarySensorEntity):
             "warning_minutes": self.coordinator.config_entry.options.get(
                 CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
             ),
-            "warning_stop_number": stop.warning_stop_number,
+            "warning_at_miles": (
+                None if stop.warning_distance_m is None
+                else round(stop.warning_distance_m / 1609.344, 2)
+            ),
+            "distance_miles": (
+                None if stop.distance_m is None
+                else round(stop.distance_m / 1609.344, 2)
+            ),
             "runs_measured": stop.eta_runs,
             "route": stop.route,
         }

@@ -9,6 +9,7 @@ import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
 import aiohttp
@@ -25,7 +26,11 @@ VERIFY_PATH = "/Account/SecondStepVerification"
 # time for that stop number. Nothing is assumed about how long a stop takes.
 MAX_LEAD_SECONDS = 7200.0   # anything further out than 2h is a mis-paired run
 MIN_LEAD_SECONDS = 1.0
-LEAD_SAMPLE_WINDOW = 20     # runs kept per stop number
+LEAD_SAMPLE_WINDOW = 20     # runs kept per distance band
+EARTH_RADIUS_M = 6371000.0
+# Lead times are learned against distance-to-stop, in bands this wide.
+BAND_METERS = 400.0
+MAX_LEARN_DISTANCE_M = 40000.0
 
 COMMUNICATION_SMS = "SMS"
 COMMUNICATION_CALL = "PhoneCall"
@@ -43,6 +48,7 @@ _DOTNET_DATE_RE = re.compile(r"^/Date\((-?\d+)(?:([+-])(\d{2})(\d{2}))?\)/$")
 # Status strings the portal builds for each of your stops, e.g.
 #   "bus 123, Route: ABC12P is before stop number 1, Your stop number is 9"
 #   "bus 123, Route: ABC12P was by your stop at 4:20 PM, Your stop number is 9"
+_BUS_IN_LINE_RE = re.compile(r"^\s*bus\s+(\S+?)\s*,", re.IGNORECASE)
 _ROUTE_RE = re.compile(r"Route:\s*(\S+)")
 _BEFORE_STOP_RE = re.compile(r"before stop number\s*(\d+)", re.IGNORECASE)
 _AT_STOP_RE = re.compile(r"(is at|arriving at|approaching)\s+your stop", re.IGNORECASE)
@@ -153,9 +159,10 @@ class Stop:
     passed_at: str | None
     status: str
     # Filled in by the coordinator, which is what watches the bus over time.
+    distance_m: float | None = None
     eta_minutes: float | None = None
     eta_runs: int = 0
-    warning_stop_number: int | None = None
+    warning_distance_m: float | None = None
 
     @property
     def key(self) -> str:
@@ -174,15 +181,32 @@ class Stop:
         return "Stop"
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> Stop:
-        """Build a stop from one entry of a vehicle's Responses array."""
-        message = (data.get("Message") or "").strip()
-        route_match = _ROUTE_RE.search(message)
-        before_match = _BEFORE_STOP_RE.search(message)
-        passed_match = _PASSED_RE.search(message)
-        your_match = _YOUR_STOP_RE.search(message)
+    def from_json(cls, data: dict[str, Any], bus_number: str = "") -> Stop | None:
+        """Build a stop from one entry of a vehicle's Responses array.
 
+        The portal puts a line for *every* stop on the account into each
+        Response's Message, and returns a Response for stops served by other
+        vehicles too. So the line matching this Response's StopNumber has to be
+        picked out, and a line naming a different bus means this Response is not
+        really about this vehicle -- returning None drops it rather than
+        inventing a phantom stop.
+        """
+        raw = (data.get("Message") or "").strip()
         stop_number = data.get("StopNumber")
+        line = _select_message_line(raw, stop_number)
+        if line is None:
+            return None
+
+        line_bus = _BUS_IN_LINE_RE.search(line)
+        if line_bus and bus_number and line_bus.group(1).strip() != bus_number.strip():
+            # This stop belongs to a different vehicle in the same feed.
+            return None
+
+        route_match = _ROUTE_RE.search(line)
+        before_match = _BEFORE_STOP_RE.search(line)
+        passed_match = _PASSED_RE.search(line)
+        your_match = _YOUR_STOP_RE.search(line)
+
         if stop_number is None and your_match:
             stop_number = int(your_match.group(1))
 
@@ -191,7 +215,7 @@ class Stop:
         if passed_match:
             status = STATUS_PASSED
             stops_away: int | None = None
-        elif _AT_STOP_RE.search(message):
+        elif _AT_STOP_RE.search(line):
             status = STATUS_AT_STOP
             stops_away = 0
         elif current_stop_number is not None and stop_number is not None:
@@ -208,7 +232,7 @@ class Stop:
             latitude=_as_coord(data.get("StopLat")),
             longitude=_as_coord(data.get("StopLon")),
             student_id=data.get("StudentID"),
-            message=message,
+            message=line,
             route=route_match.group(1) if route_match else None,
             current_stop_number=current_stop_number,
             stops_away=stops_away,
@@ -217,8 +241,36 @@ class Stop:
         )
 
 
+def _select_message_line(message: str, stop_number: Any) -> str | None:
+    """Pick the line of a multi-stop message that describes this stop."""
+    lines = [ln.strip() for ln in message.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    if stop_number is not None:
+        for line in lines:
+            match = _YOUR_STOP_RE.search(line)
+            if match and int(match.group(1)) == int(stop_number):
+                return line
+    if len(lines) == 1:
+        return lines[0]
+    # Several lines and none claims this stop number: not safely attributable.
+    return None
+
+
+def haversine_meters(
+    lat1: float | None, lon1: float | None, lat2: float | None, lon2: float | None
+) -> float | None:
+    """Great-circle distance in metres between two positions."""
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+    p1, p2 = radians(lat1), radians(lat2)
+    dp, dl = p2 - p1, radians(lon2 - lon1)
+    a = sin(dp / 2) ** 2 + cos(p1) * cos(p2) * sin(dl / 2) ** 2
+    return round(2 * EARTH_RADIUS_M * asin(sqrt(a)), 1)
+
+
 def parse_passed_at(passed_at: str, now: datetime) -> datetime | None:
-    """Turn the portal's "4:20 PM" into a datetime on the right day."""
+    """Turn the portal's "8:55 AM" into a datetime on the right day."""
     text = passed_at.strip().upper().replace(" ", "")
     for fmt in ("%I:%M%p", "%I:%M:%S%p"):
         try:
@@ -227,7 +279,7 @@ def parse_passed_at(passed_at: str, now: datetime) -> datetime | None:
             continue
         stamp = now.replace(
             hour=parsed.hour, minute=parsed.minute,
-            second=getattr(parsed, "second", 0), microsecond=0,
+            second=parsed.second, microsecond=0,
         )
         # A time that looks far in the future belongs to yesterday's run.
         if stamp - now > timedelta(hours=12):
@@ -238,23 +290,28 @@ def parse_passed_at(passed_at: str, now: datetime) -> datetime | None:
 
 @dataclass(slots=True)
 class ArrivalLearner:
-    """Learns how far ahead of arrival the bus passes each stop number.
+    """Learns how long before arrival the bus is at a given distance.
 
-    The portal gives no ETA, so we measure one. During a run we note the first
-    moment the bus is reported working each stop number. When it finally reaches
-    our stop the portal states the time it did so, and the gap back to each of
-    those moments is that stop number's lead time. Averaged over runs, "the bus
-    is at stop 8" becomes "about six minutes away" — with no assumption that
-    stops are evenly spaced or evenly slow.
+    The portal gives no ETA, so one is measured. Through a run we note when the
+    bus is seen in each 400 m band of distance from the stop. When it reaches
+    the stop the portal states the time it did so, and the gap back to those
+    sightings is that band's lead time. "The bus is 1.2 miles out" then means
+    whatever 1.2 miles has really meant on this route.
+
+    Distance rather than stop number, because a rider whose stop is number 1
+    gets no useful signal from stop numbers at all: "before stop 1" is the only
+    value that ever appears, however far away the bus is. Distance keeps
+    resolving right up to the door.
 
     Lead times are kept per route code, so a morning route and an afternoon
     route never contaminate each other.
     """
 
-    # route -> stop number -> recent lead times, in seconds
+    # route -> distance band -> one mean lead time per run, in seconds
     leads: dict[str, dict[int, deque[float]]] = field(default_factory=dict)
     run_route: str | None = None
-    first_seen: dict[int, datetime] = field(default_factory=dict)
+    # band -> sighting times during the current, unfinished run
+    seen: dict[int, list[datetime]] = field(default_factory=dict)
 
     ROUTE_UNKNOWN = "_"
 
@@ -262,77 +319,97 @@ class ArrivalLearner:
     def _route_key(route: str | None) -> str:
         return route or ArrivalLearner.ROUTE_UNKNOWN
 
-    def observe(self, route: str | None, current_stop: int | None, now: datetime) -> None:
-        """Note where the bus is, starting a fresh run if the route changed."""
-        if current_stop is None:
+    @staticmethod
+    def band(distance_m: float) -> int:
+        """The distance band a reading falls in."""
+        return int(distance_m // BAND_METERS)
+
+    def observe(
+        self, route: str | None, distance_m: float | None, now: datetime
+    ) -> None:
+        """Note how far out the bus is, restarting if the route changed."""
+        if distance_m is None or distance_m > MAX_LEARN_DISTANCE_M:
             return
         key = self._route_key(route)
         if key != self.run_route:
             self.run_route = key
-            self.first_seen = {}
-        # Only the first sighting at a stop number counts; later polls at the
-        # same stop would understate the lead.
-        self.first_seen.setdefault(current_stop, now)
+            self.seen = {}
+        self.seen.setdefault(self.band(distance_m), []).append(now)
 
     def record_arrival(self, route: str | None, arrived_at: datetime) -> int:
-        """Convert the finished run into lead times. Returns how many were kept."""
-        key = self._route_key(route)
-        if not self.first_seen:
+        """Turn the finished run into lead times. Returns how many bands kept."""
+        if not self.seen:
             return 0
-        table = self.leads.setdefault(key, {})
+        table = self.leads.setdefault(self._route_key(route), {})
         kept = 0
-        for stop_number, seen in self.first_seen.items():
-            lead = (arrived_at - seen).total_seconds()
-            if MIN_LEAD_SECONDS <= lead <= MAX_LEAD_SECONDS:
-                table.setdefault(stop_number, deque(maxlen=LEAD_SAMPLE_WINDOW)).append(lead)
-                kept += 1
+        for band, times in self.seen.items():
+            leads = [
+                lead for t in times
+                if MIN_LEAD_SECONDS
+                <= (lead := (arrived_at - t).total_seconds())
+                <= MAX_LEAD_SECONDS
+            ]
+            if not leads:
+                continue
+            # One figure per run per band, so a bus idling in one band for a
+            # long stretch cannot outvote the bands either side of it.
+            table.setdefault(band, deque(maxlen=LEAD_SAMPLE_WINDOW)).append(
+                sum(leads) / len(leads)
+            )
+            kept += 1
         # Consume the run so a repeated "passed" poll cannot double-count it.
-        self.first_seen = {}
+        self.seen = {}
         return kept
 
-    def _mean(self, route_table: dict[int, deque[float]], stop_number: int) -> float | None:
-        samples = route_table.get(stop_number)
+    def _mean(self, table: dict[int, deque[float]], band: int) -> float | None:
+        samples = table.get(band)
         if not samples:
             return None
         return sum(samples) / len(samples)
 
-    def eta_seconds(self, route: str | None, current_stop: int | None) -> float | None:
-        """Estimated seconds to our stop, or None if this stop is unmeasured."""
-        if current_stop is None:
+    def eta_seconds(
+        self, route: str | None, distance_m: float | None
+    ) -> float | None:
+        """Estimated seconds to the stop, or None if this distance is unmeasured."""
+        if distance_m is None:
             return None
         table = self.leads.get(self._route_key(route))
         if not table:
             return None
 
-        exact = self._mean(table, current_stop)
+        band = self.band(distance_m)
+        exact = self._mean(table, band)
         if exact is not None:
             return exact
 
-        # Interpolate between the nearest measured stop numbers either side.
-        # Never extrapolate: outside the measured range we simply do not know.
-        lower = max((s for s in table if s < current_stop), default=None)
-        upper = min((s for s in table if s > current_stop), default=None)
+        # Interpolate between the nearest measured bands either side. Never
+        # extrapolate: beyond the measured range we genuinely do not know.
+        lower = max((b for b in table if b < band), default=None)
+        upper = min((b for b in table if b > band), default=None)
         if lower is None or upper is None:
             return None
         low_v, high_v = self._mean(table, lower), self._mean(table, upper)
         if low_v is None or high_v is None:
             return None
-        span = upper - lower
-        return low_v + (high_v - low_v) * ((current_stop - lower) / span)
+        return low_v + (high_v - low_v) * ((band - lower) / (upper - lower))
 
-    def warning_stop(self, route: str | None, threshold_seconds: float) -> int | None:
-        """The stop number at which the bus first falls inside the warning window."""
+    def warning_distance_m(
+        self, route: str | None, threshold_seconds: float
+    ) -> float | None:
+        """The distance at which the bus first falls inside the warning window."""
         table = self.leads.get(self._route_key(route))
         if not table:
             return None
-        candidates = [
-            s for s in sorted(table)
-            if (m := self._mean(table, s)) is not None and m <= threshold_seconds
+        inside = [
+            b for b in sorted(table, reverse=True)
+            if (m := self._mean(table, b)) is not None and m <= threshold_seconds
         ]
-        return candidates[0] if candidates else None
+        if not inside:
+            return None
+        return (inside[0] + 1) * BAND_METERS
 
     def runs_recorded(self, route: str | None) -> int:
-        """How many runs have contributed, judged by the best-sampled stop."""
+        """How many runs have contributed, judged by the best-sampled band."""
         table = self.leads.get(self._route_key(route))
         if not table:
             return 0
@@ -341,7 +418,7 @@ class ArrivalLearner:
     def to_json(self) -> dict[str, dict[str, list[float]]]:
         """Serialise for Home Assistant's storage helper."""
         return {
-            route: {str(stop): list(vals) for stop, vals in table.items() if vals}
+            route: {str(band): list(vals) for band, vals in table.items() if vals}
             for route, table in self.leads.items()
             if table
         }
@@ -352,9 +429,9 @@ class ArrivalLearner:
         learner = cls()
         for route, table in (data or {}).items():
             restored: dict[int, deque[float]] = {}
-            for stop, vals in (table or {}).items():
+            for band, vals in (table or {}).items():
                 try:
-                    number = int(stop)
+                    number = int(band)
                 except (TypeError, ValueError):
                     continue
                 good = [
@@ -363,8 +440,9 @@ class ArrivalLearner:
                     and MIN_LEAD_SECONDS <= float(v) <= MAX_LEAD_SECONDS
                 ]
                 if good:
-                    restored[number] = deque(good[-LEAD_SAMPLE_WINDOW:],
-                                             maxlen=LEAD_SAMPLE_WINDOW)
+                    restored[number] = deque(
+                        good[-LEAD_SAMPLE_WINDOW:], maxlen=LEAD_SAMPLE_WINDOW
+                    )
             if restored:
                 learner.leads[route] = restored
         return learner
@@ -402,6 +480,23 @@ class Bus:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Bus:
         """Build a bus from one entry of the GetVehicles array."""
+        bus = cls._shell(data)
+        number = bus.bus_number
+        for item in data.get("Responses") or []:
+            if not isinstance(item, dict):
+                continue
+            stop = Stop.from_json(item, number)
+            if stop is None:
+                continue
+            stop.distance_m = haversine_meters(
+                bus.latitude, bus.longitude, stop.latitude, stop.longitude
+            )
+            bus.stops.append(stop)
+        return bus
+
+    @classmethod
+    def _shell(cls, data: dict[str, Any]) -> Bus:
+        """The vehicle record on its own, before stops are attributed."""
         return cls(
             bus_id=int(data.get("BusID") or 0),
             bus_number=str(data.get("BusNumber") or "").strip(),
@@ -413,7 +508,7 @@ class Bus:
             last_update=parse_dotnet_date(data.get("LastTimeUpdatedUTC")),
             point_type=data.get("PointType") or None,
             bus_code=data.get("BusCode") or None,
-            stops=[Stop.from_json(item) for item in (data.get("Responses") or [])],
+            stops=[],
         )
 
 
