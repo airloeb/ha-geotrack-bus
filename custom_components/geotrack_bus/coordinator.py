@@ -20,6 +20,7 @@ from .api import (
     GeoTrackApi,
     GeoTrackAuthError,
     GeoTrackConnectionError,
+    Stop,
     parse_passed_at,
 )
 from .const import (
@@ -73,6 +74,47 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
             self._learners[key] = ArrivalLearner.from_json(payload)
         _LOGGER.debug("Restored arrival history for %d stop(s)", len(self._learners))
 
+    def _learner_for(self, bus: Bus, stop: Stop) -> ArrivalLearner:
+        """The learner for this physical stop, adopting old history if present.
+
+        History used to be filed under "<bus id>:stop<number>", both parts of
+        which change between runs -- the afternoon is a different vehicle and
+        the portal renumbers the stop. It is now filed under the stop's
+        coordinates.
+
+        Legacy entries are adopted by matching the route code they hold rather
+        than the bus id, since the route is what actually corresponds to a
+        given approach. Only an unambiguous single match is taken, so two stops
+        sharing a route are never silently merged.
+        """
+        key = stop.key
+        if key in self._learners:
+            return self._learners[key]
+
+        legacy = [k for k in self._learners if ":" in k]
+        if legacy and stop.route:
+            matches = [
+                k for k in legacy
+                if stop.route in self._learners[k].leads
+            ]
+            if len(matches) == 1:
+                self._learners[key] = self._learners.pop(matches[0])
+                _LOGGER.info(
+                    "Adopted learned arrival history from %s into stop %s "
+                    "(matched on route %s)",
+                    matches[0], key, stop.route,
+                )
+                return self._learners[key]
+            if len(matches) > 1:
+                _LOGGER.warning(
+                    "Not migrating arrival history for stop %s: route %s "
+                    "matches several legacy records (%s)",
+                    key, stop.route, ", ".join(sorted(matches)),
+                )
+
+        self._learners[key] = ArrivalLearner()
+        return self._learners[key]
+
     def _save_history(self) -> None:
         """Persist measured lead times so the estimate survives a restart."""
         self._store.async_delay_save(
@@ -91,9 +133,7 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
 
         for bus in buses:
             for stop in bus.stops:
-                learner = self._learners.setdefault(
-                    f"{bus.bus_id}:{stop.key}", ArrivalLearner()
-                )
+                learner = self._learner_for(bus, stop)
                 route = stop.route
 
                 if stop.status == STATUS_APPROACHING:

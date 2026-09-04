@@ -39,25 +39,56 @@ class GeoTrackBusEntity(CoordinatorEntity[GeoTrackCoordinator]):
         return super().available and self.bus is not None
 
 
-class GeoTrackStopEntity(GeoTrackBusEntity):
-    """Base entity for one of your stops on a bus."""
+class GeoTrackStopEntity(CoordinatorEntity[GeoTrackCoordinator]):
+    """Base entity for one of your stops.
 
-    def __init__(
-        self, coordinator: GeoTrackCoordinator, bus_id: int, stop_key: str
-    ) -> None:
+    Deliberately not bound to a vehicle. The morning and afternoon runs are
+    served by different buses, so a stop entity resolves whichever bus is
+    currently reporting against it; binding to the bus seen at creation would
+    make the stop go unavailable every time the vehicle changed.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: GeoTrackCoordinator, stop: Stop) -> None:
         """Initialise the entity."""
-        super().__init__(coordinator, bus_id)
-        self._stop_key = stop_key
+        super().__init__(coordinator)
+        self._stop_key = stop.key
+        name = stop.label
+        if name == "My stop" and stop.stop_number is not None:
+            # The portal gives no address. The stop number it carried when
+            # first seen makes a readable label, even though the number itself
+            # drifts from run to run and is never used for identity.
+            name = f"Stop {stop.stop_number}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"stop:{stop.key}")},
+            manufacturer=MANUFACTURER,
+            name=name,
+            model="Bus stop",
+        )
+
+    @property
+    def _pair(self) -> tuple[Bus, Stop] | None:
+        """The bus currently serving this stop, and the stop itself."""
+        for bus in (self.coordinator.data or {}).values():
+            for stop in bus.stops:
+                if stop.key == self._stop_key:
+                    return bus, stop
+        return None
+
+    @property
+    def bus(self) -> Bus | None:
+        """Whichever bus is serving this stop right now."""
+        pair = self._pair
+        return pair[0] if pair else None
 
     @property
     def stop(self) -> Stop | None:
-        """The stop this entity tracks, if it is still in the feed."""
-        bus = self.bus
-        if bus is None:
-            return None
-        return next((s for s in bus.stops if s.key == self._stop_key), None)
+        """This stop as most recently reported."""
+        pair = self._pair
+        return pair[1] if pair else None
 
     @property
     def available(self) -> bool:
-        """Whether the stop is still being reported."""
-        return super().available and self.stop is not None
+        """Whether any bus is currently reporting against this stop."""
+        return super().available and self._pair is not None

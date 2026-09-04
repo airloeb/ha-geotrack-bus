@@ -158,6 +158,16 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         },
     ),
     GeoTrackStopSensorDescription(
+        key="serving_bus",
+        translation_key="serving_bus",
+        icon="mdi:bus",
+        value_fn=lambda bus, stop: bus.bus_number or None,
+        attributes_fn=lambda bus, stop: {
+            "route": stop.route,
+            "portal_stop_number": stop.stop_number,
+        },
+    ),
+    GeoTrackStopSensorDescription(
         key="runs_measured",
         translation_key="runs_measured",
         icon="mdi:school-outline",
@@ -196,12 +206,12 @@ async def async_setup_entry(
                 new.append(GeoTrackBusSensor(coordinator, bus.bus_id, bus_desc))
             for stop in bus.stops:
                 for stop_desc in STOP_SENSORS:
-                    uid = f"{bus.bus_id}_{stop.key}_{stop_desc.key}"
+                    uid = f"stop{stop.slug}_{stop_desc.key}"
                     if uid in known:
                         continue
                     known.add(uid)
                     new.append(
-                        GeoTrackStopSensor(coordinator, bus.bus_id, stop, stop_desc)
+                        GeoTrackStopSensor(coordinator, stop, stop_desc)
                     )
         if new:
             async_add_entities(new)
@@ -249,15 +259,13 @@ class GeoTrackStopSensor(GeoTrackStopEntity, SensorEntity):
     def __init__(
         self,
         coordinator: GeoTrackCoordinator,
-        bus_id: int,
         stop: Stop,
         description: GeoTrackStopSensorDescription,
     ) -> None:
         """Initialise the sensor."""
-        super().__init__(coordinator, bus_id, stop.key)
+        super().__init__(coordinator, stop)
         self.entity_description = description
-        self._attr_unique_id = f"{bus_id}_{stop.key}_{description.key}"
-        self._attr_translation_placeholders = {"stop": stop.label}
+        self._attr_unique_id = f"stop{stop.slug}_{description.key}"
 
     @property
     def native_value(self) -> Any:

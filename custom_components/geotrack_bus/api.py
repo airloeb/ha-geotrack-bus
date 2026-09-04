@@ -51,6 +51,13 @@ _DOTNET_DATE_RE = re.compile(r"^/Date\((-?\d+)(?:([+-])(\d{2})(\d{2}))?\)/$")
 _BUS_IN_LINE_RE = re.compile(r"^\s*bus\s+(\S+?)\s*,", re.IGNORECASE)
 _ROUTE_RE = re.compile(r"Route:\s*(\S+)")
 _BEFORE_STOP_RE = re.compile(r"before stop number\s*(\d+)", re.IGNORECASE)
+# "has passed stop number 1, 488 Old Whitesville Road at 11:36 AM" -- progress
+# through the route. The time is when it cleared THAT stop, not ours.
+_PASSED_STOP_RE = re.compile(
+    r"has passed stop number\s*(\d+)\s*,\s*(.*?)\s+at\s+"
+    r"([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\s*[AP]M)",
+    re.IGNORECASE,
+)
 _AT_STOP_RE = re.compile(r"(is at|arriving at|approaching)\s+your stop", re.IGNORECASE)
 _PASSED_RE = re.compile(r"was by your stop at\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\s*[AP]M)", re.IGNORECASE)
 _YOUR_STOP_RE = re.compile(r"Your stop number is\s*(\d+)", re.IGNORECASE)
@@ -159,6 +166,7 @@ class Stop:
     passed_at: str | None
     status: str
     # Filled in by the coordinator, which is what watches the bus over time.
+    last_stop_address: str | None = None
     distance_m: float | None = None
     eta_minutes: float | None = None
     eta_runs: int = 0
@@ -166,7 +174,30 @@ class Stop:
 
     @property
     def key(self) -> str:
-        """Stable per-stop identifier used for entity unique ids."""
+        """Identity of the physical stop, stable across runs.
+
+        Deliberately NOT the stop number: the portal renumbers the same stop
+        every run (the same coordinates have been served as stop 1 in the
+        morning and stop 6 in the afternoon), and the vehicle changes too. The
+        coordinates are the one thing that does not move, so they are what
+        entities and learned history hang off.
+
+        Rounded to ~11 m, which absorbs jitter without merging real stops.
+        """
+        if self.latitude is not None and self.longitude is not None:
+            return f"{self.latitude:.4f},{self.longitude:.4f}"
+        if self.student_id is not None:
+            return f"student{self.student_id}"
+        return "stop"
+
+    @property
+    def slug(self) -> str:
+        """Filesystem/entity-id-safe form of the stop identity."""
+        return self.key.replace(".", "_").replace(",", "_").replace("-", "m")
+
+    @property
+    def legacy_key(self) -> str:
+        """The pre-4.0.0 identity, used only to migrate stored history."""
         if self.stop_number is not None:
             return f"stop{self.stop_number}"
         if self.student_id is not None:
@@ -175,10 +206,14 @@ class Stop:
 
     @property
     def label(self) -> str:
-        """Human name for the stop, used in entity names."""
-        if self.stop_number is not None:
-            return f"Stop {self.stop_number}"
-        return "Stop"
+        """Human name for the stop.
+
+        Cosmetic only. The portal's stop number changes run to run, so this is
+        not used for identity -- see `key`.
+        """
+        if self.stop_address:
+            return self.stop_address
+        return "My stop"
 
     @classmethod
     def from_json(cls, data: dict[str, Any], bus_number: str = "") -> Stop | None:
@@ -204,17 +239,38 @@ class Stop:
 
         route_match = _ROUTE_RE.search(line)
         before_match = _BEFORE_STOP_RE.search(line)
+        passed_stop_match = _PASSED_STOP_RE.search(line)
         passed_match = _PASSED_RE.search(line)
         your_match = _YOUR_STOP_RE.search(line)
 
         if stop_number is None and your_match:
             stop_number = int(your_match.group(1))
 
-        current_stop_number = int(before_match.group(1)) if before_match else None
+        # The portal describes progress two ways: "is before stop number N"
+        # and "has passed stop number N, <address> at <time>".
+        current_stop_number: int | None = None
+        last_stop_address: str | None = None
+        if before_match:
+            current_stop_number = int(before_match.group(1))
+        elif passed_stop_match:
+            current_stop_number = int(passed_stop_match.group(1))
+            last_stop_address = passed_stop_match.group(2).strip() or None
 
+        passed_at: str | None = None
         if passed_match:
+            # "was by your stop at 8:55 AM" -- unambiguous arrival.
             status = STATUS_PASSED
             stops_away: int | None = None
+            passed_at = passed_match.group(1).upper()
+        elif (
+            passed_stop_match
+            and stop_number is not None
+            and current_stop_number == stop_number
+        ):
+            # It has passed the stop that is ours, so that time is the arrival.
+            status = STATUS_PASSED
+            stops_away = None
+            passed_at = passed_stop_match.group(3).upper()
         elif _AT_STOP_RE.search(line):
             status = STATUS_AT_STOP
             stops_away = 0
@@ -236,8 +292,9 @@ class Stop:
             route=route_match.group(1) if route_match else None,
             current_stop_number=current_stop_number,
             stops_away=stops_away,
-            passed_at=passed_match.group(1).upper() if passed_match else None,
+            passed_at=passed_at,
             status=status,
+            last_stop_address=last_stop_address,
         )
 
 
@@ -482,12 +539,17 @@ class Bus:
         """Build a bus from one entry of the GetVehicles array."""
         bus = cls._shell(data)
         number = bus.bus_number
+        seen: set[str] = set()
         for item in data.get("Responses") or []:
             if not isinstance(item, dict):
                 continue
             stop = Stop.from_json(item, number)
             if stop is None:
                 continue
+            # A vehicle can repeat the same stop several times over; keep one.
+            if stop.key in seen:
+                continue
+            seen.add(stop.key)
             stop.distance_m = haversine_meters(
                 bus.latitude, bus.longitude, stop.latitude, stop.longitude
             )

@@ -101,14 +101,12 @@ async def async_setup_entry(
                 new.append(GeoTrackBusBinarySensor(coordinator, bus.bus_id, bus_desc))
             for stop in bus.stops:
                 for stop_desc in STOP_BINARY_SENSORS:
-                    uid = f"{bus.bus_id}_{stop.key}_{stop_desc.key}"
+                    uid = f"stop{stop.slug}_{stop_desc.key}"
                     if uid in known:
                         continue
                     known.add(uid)
                     new.append(
-                        GeoTrackStopBinarySensor(
-                            coordinator, bus.bus_id, stop, stop_desc
-                        )
+                        GeoTrackStopBinarySensor(coordinator, stop, stop_desc)
                     )
         if new:
             async_add_entities(new)
@@ -148,15 +146,13 @@ class GeoTrackStopBinarySensor(GeoTrackStopEntity, BinarySensorEntity):
     def __init__(
         self,
         coordinator: GeoTrackCoordinator,
-        bus_id: int,
         stop: Stop,
         description: GeoTrackStopBinaryDescription,
     ) -> None:
         """Initialise the binary sensor."""
-        super().__init__(coordinator, bus_id, stop.key)
+        super().__init__(coordinator, stop)
         self.entity_description = description
-        self._attr_unique_id = f"{bus_id}_{stop.key}_{description.key}"
-        self._attr_translation_placeholders = {"stop": stop.label}
+        self._attr_unique_id = f"stop{stop.slug}_{description.key}"
 
     @property
     def is_on(self) -> bool | None:
