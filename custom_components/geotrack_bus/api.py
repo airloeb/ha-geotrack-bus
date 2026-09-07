@@ -230,11 +230,18 @@ class Stop:
         stop_number = data.get("StopNumber")
         line = _select_message_line(raw, stop_number)
         if line is None:
+            _LOGGER.debug(
+                "Dropped a Response on bus %s: no line claims stop %s. Message was %r",
+                bus_number or "?", stop_number, raw[:400],
+            )
             return None
 
         line_bus = _BUS_IN_LINE_RE.search(line)
         if line_bus and bus_number and line_bus.group(1).strip() != bus_number.strip():
-            # This stop belongs to a different vehicle in the same feed.
+            _LOGGER.debug(
+                "Dropped a Response on bus %s: its line names bus %s instead. Line was %r",
+                bus_number, line_bus.group(1).strip(), line[:300],
+            )
             return None
 
         route_match = _ROUTE_RE.search(line)
@@ -554,6 +561,13 @@ class Bus:
                 bus.latitude, bus.longitude, stop.latitude, stop.longitude
             )
             bus.stops.append(stop)
+
+        offered = len(data.get("Responses") or [])
+        if offered != len(bus.stops):
+            _LOGGER.debug(
+                "Bus %s: portal offered %d Response(s), kept %d stop(s)",
+                bus.bus_number or bus.bus_id, offered, len(bus.stops),
+            )
         return bus
 
     @classmethod
@@ -648,8 +662,19 @@ class GeoTrackApi:
         if not isinstance(payload, list):
             raise GeoTrackAuthError("Unexpected payload from the portal")
 
-        buses = [Bus.from_json(item) for item in payload if isinstance(item, dict)]
-        _LOGGER.debug("Fetched %d bus(es) from %s", len(buses), self._host)
+        records = [item for item in payload if isinstance(item, dict)]
+        buses = [Bus.from_json(item) for item in records]
+
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            summary = ", ".join(
+                f"{bus.bus_number or bus.bus_id}"
+                f"(offered={len(record.get('Responses') or [])},kept={len(bus.stops)})"
+                for record, bus in zip(records, buses)
+            )
+            _LOGGER.debug(
+                "Fetched %d bus(es) from %s: %s",
+                len(buses), self._host, summary or "none",
+            )
         return buses
 
 
