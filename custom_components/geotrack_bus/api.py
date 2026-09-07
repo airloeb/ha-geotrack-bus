@@ -167,6 +167,11 @@ class Stop:
     status: str
     # Filled in by the coordinator, which is what watches the bus over time.
     serving_bus: str | None = None
+    # Which vehicle record carried this Response, as opposed to which bus the
+    # message names. The two disagree often enough that it matters, and it is
+    # not yet settled which one is authoritative -- see carried_by/message_bus
+    # on the ETA sensor.
+    carried_by: str | None = None
     last_stop_address: str | None = None
     distance_m: float | None = None
     eta_minutes: float | None = None
@@ -559,6 +564,7 @@ class Bus:
             if stop.key in seen:
                 continue
             seen.add(stop.key)
+            stop.carried_by = number.strip() or None
             # Distance is only meaningful from the bus that serves the stop.
             # A Response carried by some other vehicle still tells us the
             # status and the arrival time, but its position is irrelevant, and

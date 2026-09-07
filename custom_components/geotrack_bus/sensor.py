@@ -155,6 +155,13 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
             "runs_measured": stop.eta_runs,
             "warning_at_miles": _miles(stop.warning_distance_m),
             "route": stop.route,
+            # Diagnostics. The portal names a bus in the message text and also
+            # attaches the Response to a vehicle record, and the two disagree
+            # on days when the assignment changes. Until it is clear which is
+            # authoritative, expose both plus whether a distance was obtained.
+            "message_bus": stop.serving_bus,
+            "carried_by_vehicle": stop.carried_by,
+            "distance_measured": stop.distance_m is not None,
         },
     ),
     GeoTrackStopSensorDescription(
