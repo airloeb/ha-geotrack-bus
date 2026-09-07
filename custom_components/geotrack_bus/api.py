@@ -166,6 +166,7 @@ class Stop:
     passed_at: str | None
     status: str
     # Filled in by the coordinator, which is what watches the bus over time.
+    serving_bus: str | None = None
     last_stop_address: str | None = None
     distance_m: float | None = None
     eta_minutes: float | None = None
@@ -236,13 +237,13 @@ class Stop:
             )
             return None
 
+        # The portal broadcasts every stop line to every tracked vehicle, so a
+        # Response naming a different bus is normal rather than bogus. Trust the
+        # message about which bus serves the stop, and keep the Response:
+        # entities are keyed by the stop's coordinates, so it lands in the right
+        # place regardless of which vehicle record carried it.
         line_bus = _BUS_IN_LINE_RE.search(line)
-        if line_bus and bus_number and line_bus.group(1).strip() != bus_number.strip():
-            _LOGGER.debug(
-                "Dropped a Response on bus %s: its line names bus %s instead. Line was %r",
-                bus_number, line_bus.group(1).strip(), line[:300],
-            )
-            return None
+        serving_bus = line_bus.group(1).strip() if line_bus else None
 
         route_match = _ROUTE_RE.search(line)
         before_match = _BEFORE_STOP_RE.search(line)
@@ -302,6 +303,7 @@ class Stop:
             passed_at=passed_at,
             status=status,
             last_stop_address=last_stop_address,
+            serving_bus=serving_bus,
         )
 
 
@@ -557,9 +559,14 @@ class Bus:
             if stop.key in seen:
                 continue
             seen.add(stop.key)
-            stop.distance_m = haversine_meters(
-                bus.latitude, bus.longitude, stop.latitude, stop.longitude
-            )
+            # Distance is only meaningful from the bus that serves the stop.
+            # A Response carried by some other vehicle still tells us the
+            # status and the arrival time, but its position is irrelevant, and
+            # measuring from it would teach the estimator nonsense.
+            if stop.serving_bus is None or stop.serving_bus == number.strip():
+                stop.distance_m = haversine_meters(
+                    bus.latitude, bus.longitude, stop.latitude, stop.longitude
+                )
             bus.stops.append(stop)
 
         offered = len(data.get("Responses") or [])

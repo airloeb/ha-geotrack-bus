@@ -161,7 +161,7 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         key="serving_bus",
         translation_key="serving_bus",
         icon="mdi:bus",
-        value_fn=lambda bus, stop: bus.bus_number or None,
+        value_fn=lambda bus, stop: stop.serving_bus or bus.bus_number or None,
         attributes_fn=lambda bus, stop: {
             "route": stop.route,
             "portal_stop_number": stop.stop_number,
