@@ -39,6 +39,9 @@ STORAGE_KEY = f"{DOMAIN}.arrivals_by_distance"
 SAVE_DELAY = 300
 # A bus absent from the feed this long is no longer worth showing.
 STALE_AFTER = timedelta(hours=3)
+# The portal often stops updating a bus a few minutes before it reaches the
+# stop. Once a run has been quiet this long, treat it as finished.
+RUN_QUIET_AFTER = timedelta(minutes=10)
 
 type GeoTrackConfigEntry = ConfigEntry[GeoTrackCoordinator]
 
@@ -125,43 +128,75 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
         )
 
     def _apply_eta(self, buses: list[Bus]) -> None:
-        """Learn from this poll, then express stops-away as minutes."""
+        """Learn from this poll, then express distance as minutes."""
         now = dt_util.now()
         threshold = float(
             self.config_entry.options.get(
                 CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
             )
         ) * 60
+        present: set[str] = set()
 
         for bus in buses:
             for stop in bus.stops:
                 learner = self._learner_for(bus, stop)
+                present.add(stop.key)
                 route = stop.route
 
                 if stop.status == STATUS_APPROACHING:
-                    learner.observe(route, stop.distance_m, now)
+                    learner.observe(route, stop.distance_m, now, bus.last_update)
                 elif stop.status == STATUS_PASSED and stop.passed_at:
-                    # The portal states when the bus reached our stop, which is
-                    # a better arrival time than anything we could infer from
-                    # poll timing. Closing the run turns it into lead times.
+                    # The portal stating when it reached the stop beats anything
+                    # we could infer, so it wins whenever it is offered.
                     arrived = parse_passed_at(stop.passed_at, now)
                     if arrived is not None:
                         kept = learner.record_arrival(route, arrived)
                         if kept:
                             _LOGGER.debug(
-                                "Learned %d distance band(s) for bus %s stop %s on route %s",
-                                kept, bus.bus_number, stop.stop_number, route,
+                                "Learned %d band(s) for stop %s on route %s "
+                                "from a reported arrival at %s",
+                                kept, stop.key, route, stop.passed_at,
                             )
 
                 stop.eta_runs = learner.runs_recorded(route)
                 stop.warning_distance_m = learner.warning_distance_m(route, threshold)
+                stop.arrival_inferred = learner.last_arrival_inferred
                 if stop.status == STATUS_APPROACHING:
                     seconds = learner.eta_seconds(route, stop.distance_m)
                     stop.eta_minutes = (
                         round(seconds / 60, 1) if seconds is not None else None
                     )
 
+        self._finalize_quiet_runs(present, now)
         self._save_history()
+
+    def _finalize_quiet_runs(self, present: set[str], now) -> None:
+        """Close out runs the portal never reported an arrival for.
+
+        A bus that tracked all the way in and then went quiet has served the
+        stop; only about one run in six gets an explicit "was by your stop".
+        Waiting for that wording throws away most of the evidence.
+        """
+        for key, learner in self._learners.items():
+            if not learner.seen:
+                continue
+            gone = key not in present
+            if not gone and not learner.is_stale(now, RUN_QUIET_AFTER):
+                continue
+            closest = learner.closest_m
+            kept = learner.finalize_by_closest_approach()
+            if kept:
+                _LOGGER.info(
+                    "Inferred an arrival for stop %s from closest approach "
+                    "(%.0f m); learned %d band(s)",
+                    key, closest or 0, kept,
+                )
+            elif closest is not None:
+                _LOGGER.debug(
+                    "Discarded a run for stop %s: closest approach was %.0f m, "
+                    "too far to assume it served the stop",
+                    key, closest,
+                )
 
     async def _async_update_data(self) -> dict[int, Bus]:
         """Fetch the current position of every bus on the account."""

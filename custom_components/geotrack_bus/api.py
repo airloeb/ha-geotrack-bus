@@ -27,6 +27,11 @@ VERIFY_PATH = "/Account/SecondStepVerification"
 MAX_LEAD_SECONDS = 7200.0   # anything further out than 2h is a mis-paired run
 MIN_LEAD_SECONDS = 1.0
 LEAD_SAMPLE_WINDOW = 20     # runs kept per distance band
+# The portal usually stops updating a bus a few minutes before it reaches the
+# stop, and only sometimes says "was by your stop". When it does not, the
+# closest the bus got is taken as the arrival -- but only if it got near enough
+# that it plainly served the stop.
+MAX_INFERRED_ARRIVAL_M = 800.0
 EARTH_RADIUS_M = 6371000.0
 # Lead times are learned against distance-to-stop, in bands this wide.
 BAND_METERS = 400.0
@@ -177,6 +182,7 @@ class Stop:
     eta_minutes: float | None = None
     eta_runs: int = 0
     warning_distance_m: float | None = None
+    arrival_inferred: bool = False
 
     @property
     def key(self) -> str:
@@ -383,6 +389,13 @@ class ArrivalLearner:
     run_route: str | None = None
     # band -> sighting times during the current, unfinished run
     seen: dict[int, list[datetime]] = field(default_factory=dict)
+    # Closest the bus has come during this run, and when.
+    closest_m: float | None = None
+    closest_at: datetime | None = None
+    # The portal's own timestamp for the last reading used, so a frozen feed is
+    # not mistaken for the bus sitting still at that distance.
+    last_bus_update: datetime | None = None
+    last_arrival_inferred: bool = False
 
     ROUTE_UNKNOWN = "_"
 
@@ -396,7 +409,11 @@ class ArrivalLearner:
         return int(distance_m // BAND_METERS)
 
     def observe(
-        self, route: str | None, distance_m: float | None, now: datetime
+        self,
+        route: str | None,
+        distance_m: float | None,
+        now: datetime,
+        bus_update: datetime | None = None,
     ) -> None:
         """Note how far out the bus is, restarting if the route changed."""
         if distance_m is None or distance_m > MAX_LEARN_DISTANCE_M:
@@ -404,8 +421,51 @@ class ArrivalLearner:
         key = self._route_key(route)
         if key != self.run_route:
             self.run_route = key
-            self.seen = {}
-        self.seen.setdefault(self.band(distance_m), []).append(now)
+            self._reset_run()
+        # A frozen feed repeats the same reading every poll. Recording those
+        # would bury the run's real spread under whatever distance it stalled at.
+        if bus_update is not None and bus_update == self.last_bus_update:
+            return
+        self.last_bus_update = bus_update
+
+        stamp = bus_update or now
+        self.seen.setdefault(self.band(distance_m), []).append(stamp)
+        if self.closest_m is None or distance_m < self.closest_m:
+            self.closest_m = distance_m
+            self.closest_at = stamp
+
+    def _reset_run(self) -> None:
+        """Forget the in-progress run without touching what has been learned."""
+        self.seen = {}
+        self.closest_m = None
+        self.closest_at = None
+        self.last_bus_update = None
+
+    def is_stale(self, now: datetime, max_age: timedelta) -> bool:
+        """Whether the portal has stopped moving this bus on."""
+        if self.last_bus_update is None:
+            return False
+        return (now - self.last_bus_update) > max_age
+
+    def finalize_by_closest_approach(self) -> int:
+        """Close a run the portal never reported an arrival for.
+
+        The bus tracked in, got close, and the feed went quiet. Treat the
+        closest approach as the arrival: it is a few minutes early compared with
+        the portal's own wording, but it is the difference between learning a
+        route every day and learning it roughly once a week.
+        """
+        if not self.seen or self.closest_at is None or self.closest_m is None:
+            self._reset_run()
+            return 0
+        if self.closest_m > MAX_INFERRED_ARRIVAL_M:
+            # Never got near the stop, so nothing can be concluded about it.
+            self._reset_run()
+            return 0
+        route, at = self.run_route, self.closest_at
+        kept = self.record_arrival(route, at)
+        self.last_arrival_inferred = True
+        return kept
 
     def record_arrival(self, route: str | None, arrived_at: datetime) -> int:
         """Turn the finished run into lead times. Returns how many bands kept."""
@@ -429,7 +489,8 @@ class ArrivalLearner:
             )
             kept += 1
         # Consume the run so a repeated "passed" poll cannot double-count it.
-        self.seen = {}
+        self._reset_run()
+        self.last_arrival_inferred = False
         return kept
 
     def _mean(self, table: dict[int, deque[float]], band: int) -> float | None:

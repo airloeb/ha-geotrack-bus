@@ -111,6 +111,19 @@ Details:
   extrapolated beyond the measured range — outside it, the ETA is unknown.
 - Everything persists across restarts.
 
+**When the portal never says the bus arrived.** Only about one run in six ends
+with a "was by your stop at ..." message; far more often the feed simply stops
+updating a few minutes before the bus reaches the stop. A run that tracked all
+the way in and then went quiet is closed out using the **closest approach** as
+the arrival, provided the bus got within half a mile — near enough that it
+plainly served the stop. A run that never got close is discarded rather than
+guessed at.
+
+An inferred arrival is a few minutes earlier than the real one, so estimates
+built on it run slightly conservative. The ETA sensor's `last_arrival`
+attribute reads `reported` or `inferred` so you can tell which you are looking
+at. A reported arrival always wins when the portal offers one.
+
 **Cold start: there is no ETA until a route has been watched through one
 complete run.** `sensor.<bus>_<stop>_eta` stays unknown and
 `binary_sensor.<bus>_<stop>_arriving_soon` stays off, so no warning fires on day
