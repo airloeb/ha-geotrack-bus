@@ -137,27 +137,54 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
         ) * 60
         present: set[str] = set()
 
+        # Several vehicles can carry the same stop. Pick one to learn from,
+        # preferring a real distance and then the nearest, so the same moment
+        # is not recorded two or three times over.
+        best: dict[str, tuple[Bus, Stop]] = {}
         for bus in buses:
             for stop in bus.stops:
-                learner = self._learner_for(bus, stop)
-                present.add(stop.key)
+                current = best.get(stop.key)
+                if current is None:
+                    best[stop.key] = (bus, stop)
+                    continue
+                _, held = current
+                if held.distance_m is None and stop.distance_m is not None:
+                    best[stop.key] = (bus, stop)
+                elif (
+                    held.distance_m is not None
+                    and stop.distance_m is not None
+                    and stop.distance_m < held.distance_m
+                ):
+                    best[stop.key] = (bus, stop)
+
+        for bus, stop in best.values():
+            learner = self._learner_for(bus, stop)
+            present.add(stop.key)
+            route = stop.route
+
+            if stop.status == STATUS_APPROACHING:
+                learner.observe(route, stop.distance_m, now, bus.last_update)
+            elif stop.status == STATUS_PASSED and stop.passed_at:
+                # The portal stating when it reached the stop beats anything we
+                # could infer, so it wins whenever it is offered.
+                arrived = parse_passed_at(stop.passed_at, now)
+                if arrived is not None:
+                    kept = learner.record_arrival(route, arrived)
+                    if kept:
+                        _LOGGER.debug(
+                            "Learned %d band(s) for stop %s on route %s from a "
+                            "reported arrival at %s",
+                            kept, stop.key, route, stop.passed_at,
+                        )
+
+        # Every copy of a stop needs the learned figures, whichever one an
+        # entity happens to resolve to.
+        for bus in buses:
+            for stop in bus.stops:
+                learner = self._learners.get(stop.key)
+                if learner is None:
+                    continue
                 route = stop.route
-
-                if stop.status == STATUS_APPROACHING:
-                    learner.observe(route, stop.distance_m, now, bus.last_update)
-                elif stop.status == STATUS_PASSED and stop.passed_at:
-                    # The portal stating when it reached the stop beats anything
-                    # we could infer, so it wins whenever it is offered.
-                    arrived = parse_passed_at(stop.passed_at, now)
-                    if arrived is not None:
-                        kept = learner.record_arrival(route, arrived)
-                        if kept:
-                            _LOGGER.debug(
-                                "Learned %d band(s) for stop %s on route %s "
-                                "from a reported arrival at %s",
-                                kept, stop.key, route, stop.passed_at,
-                            )
-
                 stop.eta_runs = learner.runs_recorded(route)
                 stop.warning_distance_m = learner.warning_distance_m(route, threshold)
                 stop.arrival_inferred = learner.last_arrival_inferred

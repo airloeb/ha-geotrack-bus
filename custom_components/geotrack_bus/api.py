@@ -177,6 +177,9 @@ class Stop:
     # not yet settled which one is authoritative -- see carried_by/message_bus
     # on the ETA sensor.
     carried_by: str | None = None
+    # False when distance had to be taken from the carrying vehicle because the
+    # bus the message names is not published in the feed at all.
+    distance_from_named_bus: bool = True
     last_stop_address: str | None = None
     distance_m: float | None = None
     eta_minutes: float | None = None
@@ -662,6 +665,40 @@ class Bus:
         )
 
 
+def _resolve_missing_distances(buses: list[Bus]) -> None:
+    """Fall back to the carrying vehicle when the named bus is not published.
+
+    Distance is normally measured from the bus the message names. On the
+    morning runs, though, the portal names a bus it never publishes as a
+    vehicle -- it relays the text through whichever vehicle it is tracking. In
+    that case the carrying vehicle is the only position on offer, and since the
+    portal only publishes this account's own buses, it is the right one to use.
+    Refusing it left the morning routes unable to learn at all.
+    """
+    published = {
+        bus.bus_number.strip().lower() for bus in buses if bus.bus_number
+    }
+    for bus in buses:
+        for stop in bus.stops:
+            if stop.distance_m is not None:
+                continue
+            named = (stop.serving_bus or "").strip().lower()
+            if named and named in published:
+                # The named bus is in the feed; its own record carries the
+                # distance, so leave this copy without one.
+                continue
+            stop.distance_m = haversine_meters(
+                bus.latitude, bus.longitude, stop.latitude, stop.longitude
+            )
+            stop.distance_from_named_bus = False
+            if stop.distance_m is not None:
+                _LOGGER.debug(
+                    "Stop %s: message names bus %s, which is not published; "
+                    "measuring from carrier %s instead",
+                    stop.key, stop.serving_bus, bus.bus_number,
+                )
+
+
 def _as_coord(value: Any) -> float | None:
     """Coordinates of exactly 0 mean "no fix", not the Gulf of Guinea."""
     number = _as_float(value)
@@ -738,6 +775,7 @@ class GeoTrackApi:
 
         records = [item for item in payload if isinstance(item, dict)]
         buses = [Bus.from_json(item) for item in records]
+        _resolve_missing_distances(buses)
 
         if _LOGGER.isEnabledFor(logging.DEBUG):
             summary = ", ".join(

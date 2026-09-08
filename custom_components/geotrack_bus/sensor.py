@@ -163,6 +163,7 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
             "carried_by_vehicle": stop.carried_by,
             "distance_measured": stop.distance_m is not None,
             "last_arrival": "inferred" if stop.arrival_inferred else "reported",
+            "distance_from_named_bus": stop.distance_from_named_bus,
         },
     ),
     GeoTrackStopSensorDescription(
