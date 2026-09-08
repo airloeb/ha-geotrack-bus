@@ -71,7 +71,7 @@ def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool:
     if stop.status != STATUS_APPROACHING:
         return False
 
-    options = coordinator.config_entry.options
+    options = coordinator.config_entry.options or {}
     miles = float(options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES))
     stops = int(options.get(CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS))
 
@@ -202,17 +202,17 @@ class GeoTrackStopBinarySensor(GeoTrackStopEntity, BinarySensorEntity):
         return {
             "eta_minutes": stop.eta_minutes,
             "stops_away": stop.stops_away,
-            "warning_miles": self.coordinator.config_entry.options.get(
+            "warning_miles": (self.coordinator.config_entry.options or {}).get(
                 CONF_WARNING_MILES, DEFAULT_WARNING_MILES
             ),
-            "warning_stops": self.coordinator.config_entry.options.get(
+            "warning_stops": (self.coordinator.config_entry.options or {}).get(
                 CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS
             ),
             "triggered_by": (
                 "distance"
                 if stop.distance_m is not None
                 and stop.distance_m
-                <= float(self.coordinator.config_entry.options.get(
+                <= float((self.coordinator.config_entry.options or {}).get(
                     CONF_WARNING_MILES, DEFAULT_WARNING_MILES)) * 1609.344
                 else "stops_away"
             ),

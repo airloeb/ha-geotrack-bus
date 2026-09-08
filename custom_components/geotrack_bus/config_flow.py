@@ -280,7 +280,9 @@ class GeoTrackOptionsFlow(OptionsFlow):
                 }
             )
 
-        options = self.config_entry.options
+        # An entry created before these options existed has no options at all,
+        # and `.get` on that raises, which surfaces as a 500 from the flow.
+        options = self.config_entry.options or {}
         schema = vol.Schema(
             {
                 vol.Required(

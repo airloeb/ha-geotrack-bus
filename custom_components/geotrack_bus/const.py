@@ -20,7 +20,9 @@ MAX_SCAN_INTERVAL: Final = 300
 # Distance works on every route; the stop count only helps where the rider is
 # far enough down the route to have a runway of earlier stops.
 CONF_WARNING_MILES: Final = "warning_miles"
-DEFAULT_WARNING_MILES: Final = 0.75
+# 0.55 mi measured exactly five minutes before arrival on a real run;
+# 0.75 gave 7.5 minutes.
+DEFAULT_WARNING_MILES: Final = 0.55
 CONF_WARNING_STOPS: Final = "warning_stops"
 DEFAULT_WARNING_STOPS: Final = 1
 

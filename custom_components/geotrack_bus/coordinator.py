@@ -131,7 +131,7 @@ class GeoTrackCoordinator(DataUpdateCoordinator[dict[int, Bus]]):
         """Learn from this poll, then express distance as minutes."""
         now = dt_util.now()
         threshold = float(
-            self.config_entry.options.get(
+            (self.config_entry.options or {}).get(
                 CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
             )
         ) * 60
