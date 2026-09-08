@@ -298,13 +298,9 @@ class GeoTrackOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required(
-                    CONF_WARNING_MILES,
-    CONF_WARNING_MINUTES,
-    CONF_WARNING_STOPS,
+                    CONF_WARNING_MINUTES,
                     default=options.get(
-                        CONF_WARNING_MILES,
-    CONF_WARNING_MINUTES,
-    CONF_WARNING_STOPS, DEFAULT_WARNING_MINUTES
+                        CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
                     ),
                 ): NumberSelector(
                     NumberSelectorConfig(
