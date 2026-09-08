@@ -15,7 +15,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import STATUS_APPROACHING, STATUS_AT_STOP, STATUS_PASSED, Bus, Stop
-from .const import CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+from .const import (
+    CONF_WARNING_MILES,
+    CONF_WARNING_MINUTES,
+    CONF_WARNING_STOPS,
+    DEFAULT_WARNING_MILES,
+    DEFAULT_WARNING_MINUTES,
+    DEFAULT_WARNING_STOPS,
+)
 from .coordinator import GeoTrackConfigEntry, GeoTrackCoordinator
 from .entity import GeoTrackBusEntity, GeoTrackStopEntity
 
@@ -43,19 +50,41 @@ BUS_BINARY_SENSORS: tuple[GeoTrackBusBinaryDescription, ...] = (
     ),
 )
 
-def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool:
-    """Whether the bus is inside the warning window.
+MILES = 1609.344
 
-    Stays off until this route has been watched through at least one complete
-    run; nothing is assumed about how long stops take, so before that there is
-    genuinely no estimate to act on.
+
+def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool:
+    """Whether the bus is close enough to be worth telling someone about.
+
+    Driven by fixed thresholds, not by the learned estimate, so it works on the
+    first run of a route rather than after a week of calibration. Two signals,
+    whichever trips first:
+
+    * **Distance.** Works everywhere. Measured at 0.49 mi four minutes before
+      arrival, so the 0.75 mi default lands around five minutes out.
+    * **Stops away.** Exact, portal-supplied, and immune to a frozen feed --
+      but only useful where the rider is far enough down the route to have
+      earlier stops to count. A rider at stop 1 reads 0 for the whole approach,
+      and at stop 3 the portal never advanced past "before stop 1" at all, so
+      the rule is skipped unless the runway genuinely exists.
     """
-    if stop.status != STATUS_APPROACHING or stop.eta_minutes is None:
+    if stop.status != STATUS_APPROACHING:
         return False
-    threshold = coordinator.config_entry.options.get(
-        CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
-    )
-    return stop.eta_minutes <= float(threshold)
+
+    options = coordinator.config_entry.options
+    miles = float(options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES))
+    stops = int(options.get(CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS))
+
+    if stop.distance_m is not None and stop.distance_m <= miles * MILES:
+        return True
+
+    # Needs at least one stop before the threshold for the count to mean
+    # anything; otherwise it would be true from the moment the run began.
+    has_runway = stop.stop_number is not None and stop.stop_number > stops + 1
+    if has_runway and stop.stops_away is not None and stop.stops_away <= stops:
+        return True
+
+    return False
 
 
 STOP_BINARY_SENSORS: tuple[GeoTrackStopBinaryDescription, ...] = (
@@ -173,8 +202,19 @@ class GeoTrackStopBinarySensor(GeoTrackStopEntity, BinarySensorEntity):
         return {
             "eta_minutes": stop.eta_minutes,
             "stops_away": stop.stops_away,
-            "warning_minutes": self.coordinator.config_entry.options.get(
-                CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+            "warning_miles": self.coordinator.config_entry.options.get(
+                CONF_WARNING_MILES, DEFAULT_WARNING_MILES
+            ),
+            "warning_stops": self.coordinator.config_entry.options.get(
+                CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS
+            ),
+            "triggered_by": (
+                "distance"
+                if stop.distance_m is not None
+                and stop.distance_m
+                <= float(self.coordinator.config_entry.options.get(
+                    CONF_WARNING_MILES, DEFAULT_WARNING_MILES)) * 1609.344
+                else "stops_away"
             ),
             "warning_at_miles": (
                 None if stop.warning_distance_m is None

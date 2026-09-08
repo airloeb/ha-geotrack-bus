@@ -83,7 +83,26 @@ notification and offers both routes again. The portal sets a persistent device
 cookie, so this is infrequent — but it will happen eventually, and it will happen
 if you sign out in that browser.
 
-## The ETA is learned, not assumed
+## The warning is threshold-driven, not learned
+
+`binary_sensor.<stop>_arriving_soon` fires on fixed thresholds, so it works on a
+route's **first** run rather than after days of calibration. Two signals,
+whichever trips first:
+
+- **Distance** — works on every route. Set under **Configure**, default
+  0.75 miles, which measured about five minutes before arrival.
+- **Stops away** — exact and portal-supplied, so it survives the feed freezing
+  minutes before arrival. Default 1 stop. Only used where your stop is far
+  enough down the route to have earlier stops to count: a rider at stop 1 reads
+  zero for the whole approach, so the rule is skipped for them.
+
+Which one fired is on the sensor's `triggered_by` attribute.
+
+The two together cover the awkward cases. Near the front of a route there is no
+progress runway and distance carries it; deep into a route the stop count fires
+even while the bus is still miles away by road.
+
+## The ETA sensor (informational)
 
 The portal reports only which stop the bus is working on and where the vehicle
 is. It has no arrival time to give, and this integration does not invent one
@@ -130,9 +149,8 @@ complete run.** `sensor.<bus>_<stop>_eta` stays unknown and
 one. `sensor.<bus>_<stop>_runs_measured` shows how many runs are banked, and the
 `warning_at_miles` attribute says how far out the warning will fire.
 
-`arriving_soon` turns on when the learned ETA falls inside the window set under
-**Configure** (default 5 minutes) — that is the entity to hang a "leave the
-house now" notification on.
+The ETA sensor is informational: the warning itself no longer depends on it,
+so a route with nothing learned still warns you on the thresholds above.
 
 It is still an estimate: it assumes today's run resembles recent ones, and knows
 nothing about traffic or an unusually long boarding.

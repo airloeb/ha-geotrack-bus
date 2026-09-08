@@ -40,13 +40,17 @@ from .api import (
 )
 from .const import (
     CONF_COMMUNICATION,
+    CONF_WARNING_MILES,
     CONF_WARNING_MINUTES,
+    CONF_WARNING_STOPS,
     CONF_COOKIE,
     CONF_HOST,
     CONF_PHONE,
     DEFAULT_HOST,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_WARNING_MILES,
     DEFAULT_WARNING_MINUTES,
+    DEFAULT_WARNING_STOPS,
     DOMAIN,
     MAX_SCAN_INTERVAL,
     MAX_WARNING_MINUTES,
@@ -271,6 +275,8 @@ class GeoTrackOptionsFlow(OptionsFlow):
                 data={
                     CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                     CONF_WARNING_MINUTES: int(user_input[CONF_WARNING_MINUTES]),
+                    CONF_WARNING_MILES: float(user_input[CONF_WARNING_MILES]),
+                    CONF_WARNING_STOPS: int(user_input[CONF_WARNING_STOPS]),
                 }
             )
 
@@ -290,9 +296,13 @@ class GeoTrackOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required(
-                    CONF_WARNING_MINUTES,
+                    CONF_WARNING_MILES,
+    CONF_WARNING_MINUTES,
+    CONF_WARNING_STOPS,
                     default=options.get(
-                        CONF_WARNING_MINUTES, DEFAULT_WARNING_MINUTES
+                        CONF_WARNING_MILES,
+    CONF_WARNING_MINUTES,
+    CONF_WARNING_STOPS, DEFAULT_WARNING_MINUTES
                     ),
                 ): NumberSelector(
                     NumberSelectorConfig(
@@ -300,6 +310,26 @@ class GeoTrackOptionsFlow(OptionsFlow):
                         max=MAX_WARNING_MINUTES,
                         step=1,
                         unit_of_measurement="minutes",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_WARNING_MILES,
+                    default=options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0.1, max=10, step=0.05,
+                        unit_of_measurement="miles",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_WARNING_STOPS,
+                    default=options.get(CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=10, step=1,
+                        unit_of_measurement="stops",
                         mode=NumberSelectorMode.BOX,
                     )
                 ),

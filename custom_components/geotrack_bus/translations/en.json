@@ -69,11 +69,15 @@
         "title": "Polling options",
         "data": {
           "scan_interval": "Update interval",
-          "warning_minutes": "Warn me this many minutes ahead"
+          "warning_minutes": "Warn me this many minutes ahead",
+          "warning_miles": "Warn me within this distance",
+          "warning_stops": "Warn me within this many stops"
         },
         "data_description": {
           "scan_interval": "How often to poll the portal. The portal itself refreshes roughly every 20 seconds.",
-          "warning_minutes": "The portal publishes no arrival time. It is learned: each run records how long before arrival the bus was at each distance from your stop, anchored on the portal's own \"was by your stop at ...\" time. Until a route has been watched through one full run there is no estimate, and no warning fires."
+          "warning_minutes": "Only affects the learned ETA sensor and the distance it reports as warning_at_miles. The warning itself is driven by the fixed thresholds above, so it works from a route's first run.",
+          "warning_miles": "The warning fires when the bus is this close, whichever of the two thresholds trips first. Distance works on every route. Measured at 0.49 miles four minutes before arrival, so 0.75 lands around five minutes out.",
+          "warning_stops": "Also fire when the bus is this many stops from yours. Exact and immune to a frozen feed, but only used where your stop is far enough down the route to have earlier stops to count -- a rider near the front of a route gets no runway, so the rule is skipped there."
         }
       }
     }
