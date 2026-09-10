@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -26,6 +26,7 @@ from .api import (
     Bus,
     STATUS_APPROACHING,
     STATUS_AT_STOP,
+    STATUS_NO_INFO,
     STATUS_PASSED,
     STATUS_UNKNOWN,
     Stop,
@@ -38,6 +39,13 @@ COMPASS = (
     "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
 )
 
+
+
+def _minutes(age: timedelta | None) -> float | None:
+    """Age of a position report, in whole minutes."""
+    if age is None:
+        return None
+    return round(age.total_seconds() / 60)
 
 
 def _compass(bearing: int | None) -> str | None:
@@ -125,11 +133,18 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
         translation_key="status",
         icon="mdi:bus-clock",
         device_class=SensorDeviceClass.ENUM,
-        options=[STATUS_APPROACHING, STATUS_AT_STOP, STATUS_PASSED, STATUS_UNKNOWN],
+        options=[
+            STATUS_APPROACHING,
+            STATUS_AT_STOP,
+            STATUS_PASSED,
+            STATUS_NO_INFO,
+            STATUS_UNKNOWN,
+        ],
         value_fn=lambda bus, stop: stop.status,
         attributes_fn=lambda bus, stop: {
             "passed_at": stop.passed_at,
             "stop_address": stop.stop_address,
+            "position_stale": stop.position_stale,
         },
     ),
     GeoTrackStopSensorDescription(
@@ -164,6 +179,11 @@ STOP_SENSORS: tuple[GeoTrackStopSensorDescription, ...] = (
             "distance_measured": stop.distance_m is not None,
             "last_arrival": "inferred" if stop.arrival_inferred else "reported",
             "distance_from_named_bus": stop.distance_from_named_bus,
+            # The portal keeps serving a fix long after the bus stopped
+            # reporting one, so say plainly whether this stop is working from
+            # a live position or from none at all.
+            "position_stale": stop.position_stale,
+            "position_age_minutes": _minutes(bus.position_age),
         },
     ),
     GeoTrackStopSensorDescription(

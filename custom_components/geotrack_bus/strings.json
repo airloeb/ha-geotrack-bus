@@ -109,7 +109,8 @@
           "approaching": "Approaching",
           "at_stop": "At your stop",
           "passed": "Already passed",
-          "unknown": "Unknown"
+          "unknown": "Unknown",
+          "no_info": "Not tracked"
         }
       },
       "distance": {

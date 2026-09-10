@@ -27,7 +27,7 @@ Then, for each of **your** stops on that bus (one set per child/stop):
 | Entity | Example | Notes |
 | --- | --- | --- |
 | `sensor.bus_123_stop_9_stops_away` | `8` | your stop number minus the bus's current stop |
-| `sensor.bus_123_stop_9_status` | `approaching` | `approaching` / `at_stop` / `passed` / `unknown` |
+| `sensor.bus_123_stop_9_status` | `approaching` | `approaching` / `at_stop` / `passed` / `no_info` / `unknown` |
 | `sensor.bus_123_stop_9_distance` | `4.1 mi` | straight-line bus→stop distance |
 | `sensor.bus_123_stop_9_message` | the portal's own wording | |
 | `sensor.bus_123_stop_9_eta` | `8 min` | learned from past runs; unknown until one completes |
@@ -268,6 +268,19 @@ actions:
   not a time estimate. The portal does not publish an ETA.
 - New buses and stops appear as entities automatically the first time they show
   up in the feed — no restart needed.
+- A position is only used while it is fresh. The portal keeps handing back the
+  last fix it ever saw for a vehicle, indefinitely — one was re-served unchanged
+  for two and a half days — so a fix older than 12 minutes is discarded rather
+  than measured from. When that happens the stop reports no distance and no ETA,
+  the `position_stale` attribute goes `true`, and `arriving_soon` stays off. Use
+  it in conditions if you notify on the raw status, which comes from the message
+  text and can claim progress the position does not support.
+- `no_info` is the portal saying outright that it has lost the bus
+  (*"Sorry, No info for bus 123..."*). It is reported separately from `unknown`,
+  which just means the message did not parse.
+- `distance_from_named_bus` is `false` when the distance had to be taken from
+  some other vehicle relaying the message, or when nothing confirms whose
+  position it is. Treat the distance as indicative only in that case.
 
 ## License
 

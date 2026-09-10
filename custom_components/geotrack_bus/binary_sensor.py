@@ -70,6 +70,11 @@ def _arriving_soon(coordinator: GeoTrackCoordinator, stop: Stop) -> bool:
     """
     if stop.status != STATUS_APPROACHING:
         return False
+    if stop.position_stale:
+        # Approaching according to the message, but the only position on offer
+        # is old. Neither the distance nor the stop count can be trusted to
+        # describe where the bus is now.
+        return False
 
     options = coordinator.config_entry.options or {}
     miles = float(options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES))

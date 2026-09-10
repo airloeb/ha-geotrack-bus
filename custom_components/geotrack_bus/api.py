@@ -66,11 +66,24 @@ _PASSED_STOP_RE = re.compile(
 _AT_STOP_RE = re.compile(r"(is at|arriving at|approaching)\s+your stop", re.IGNORECASE)
 _PASSED_RE = re.compile(r"was by your stop at\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\s*[AP]M)", re.IGNORECASE)
 _YOUR_STOP_RE = re.compile(r"Your stop number is\s*(\d+)", re.IGNORECASE)
+# "Sorry, No info for bus 123, Route: ABC1A on your stop, Your stop number is 3"
+# -- the portal saying outright that it has lost the bus. It is not a progress
+# message, and letting it fall through to "unknown" made every guard read the
+# stop as merely quiet rather than untracked.
+_NO_INFO_RE = re.compile(r"no info for bus\s+(\S+?)\s*,", re.IGNORECASE)
 
 STATUS_APPROACHING = "approaching"
 STATUS_AT_STOP = "at_stop"
 STATUS_PASSED = "passed"
+STATUS_NO_INFO = "no_info"
 STATUS_UNKNOWN = "unknown"
+
+# How old a published fix may be and still count as a location. The portal
+# re-serves the last position it ever saw, indefinitely -- one bus's fix was
+# handed back unchanged for two and a half days, and every distance computed
+# from it looked perfectly healthy. Nothing downstream can tell a live fix from
+# a fossil, so the age is checked here, once, before the coordinates are used.
+MAX_POSITION_AGE = timedelta(minutes=12)
 
 
 class GeoTrackError(Exception):
@@ -178,8 +191,12 @@ class Stop:
     # on the ETA sensor.
     carried_by: str | None = None
     # False when distance had to be taken from the carrying vehicle because the
-    # bus the message names is not published in the feed at all.
+    # bus the message names is not published in the feed at all, and also
+    # whenever nothing confirms the position belongs to the serving bus.
     distance_from_named_bus: bool = True
+    # True when a position was on offer for this stop but was too old to use.
+    # Distinct from simply having no distance: it says the bus is not reporting.
+    position_stale: bool = False
     last_stop_address: str | None = None
     distance_m: float | None = None
     eta_minutes: float | None = None
@@ -257,7 +274,16 @@ class Stop:
         # entities are keyed by the stop's coordinates, so it lands in the right
         # place regardless of which vehicle record carried it.
         line_bus = _BUS_IN_LINE_RE.search(line)
-        serving_bus = line_bus.group(1).strip() if line_bus else None
+        no_info = _NO_INFO_RE.search(line)
+        if line_bus:
+            serving_bus = line_bus.group(1).strip()
+        elif no_info:
+            # The no-info line names the bus too, just not in the leading
+            # position. Keeping the name matters: without it the stop reported
+            # whichever vehicle happened to relay the text.
+            serving_bus = no_info.group(1).strip()
+        else:
+            serving_bus = None
 
         route_match = _ROUTE_RE.search(line)
         before_match = _BEFORE_STOP_RE.search(line)
@@ -279,10 +305,15 @@ class Stop:
             last_stop_address = passed_stop_match.group(2).strip() or None
 
         passed_at: str | None = None
-        if passed_match:
+        if no_info:
+            # Explicitly untracked. There is no progress to report and no
+            # position the portal will stand behind.
+            status = STATUS_NO_INFO
+            stops_away: int | None = None
+        elif passed_match:
             # "was by your stop at 8:55 AM" -- unambiguous arrival.
             status = STATUS_PASSED
-            stops_away: int | None = None
+            stops_away = None
             passed_at = passed_match.group(1).upper()
         elif (
             passed_stop_match
@@ -605,6 +636,24 @@ class Bus:
         return f"Bus {self.bus_number}" if self.bus_number else f"Bus {self.bus_id}"
 
     @property
+    def position_age(self) -> timedelta | None:
+        """How long ago this vehicle's fix was taken, if it is dated at all."""
+        if self.last_update is None:
+            return None
+        return datetime.now(timezone.utc) - self.last_update
+
+    @property
+    def position_stale(self) -> bool:
+        """True when the fix is too old to measure a distance from.
+
+        An undated fix counts as stale: an unknown age is not a fresh one, and
+        guessing in the reassuring direction is exactly the failure this
+        check exists to stop.
+        """
+        age = self.position_age
+        return age is None or age > MAX_POSITION_AGE
+
+    @property
     def route(self) -> str | None:
         """Route code, which the portal only reports inside the stop messages."""
         for stop in self.stops:
@@ -634,9 +683,16 @@ class Bus:
             # status and the arrival time, but its position is irrelevant, and
             # measuring from it would teach the estimator nonsense.
             if stop.serving_bus is None or stop.serving_bus == number.strip():
-                stop.distance_m = haversine_meters(
-                    bus.latitude, bus.longitude, stop.latitude, stop.longitude
-                )
+                if bus.position_stale:
+                    stop.position_stale = True
+                else:
+                    stop.distance_m = haversine_meters(
+                        bus.latitude, bus.longitude, stop.latitude, stop.longitude
+                    )
+                if stop.serving_bus is None:
+                    # No name in the message to compare against, so nothing
+                    # says this position belongs to the bus serving the stop.
+                    stop.distance_from_named_bus = False
             bus.stops.append(stop)
 
         offered = len(data.get("Responses") or [])
@@ -687,6 +743,11 @@ def _resolve_missing_distances(buses: list[Bus]) -> None:
                 # The named bus is in the feed; its own record carries the
                 # distance, so leave this copy without one.
                 continue
+            if bus.position_stale:
+                # The carrier is not reporting either, so there is no position
+                # to fall back to -- only an old one, which is worse than none.
+                stop.position_stale = True
+                continue
             stop.distance_m = haversine_meters(
                 bus.latitude, bus.longitude, stop.latitude, stop.longitude
             )
@@ -697,6 +758,13 @@ def _resolve_missing_distances(buses: list[Bus]) -> None:
                     "measuring from carrier %s instead",
                     stop.key, stop.serving_bus, bus.bus_number,
                 )
+
+    # A copy with no distance of its own cannot vouch for where that distance
+    # came from, and the flag is read as a go-ahead by the notifications.
+    for bus in buses:
+        for stop in bus.stops:
+            if stop.distance_m is None:
+                stop.distance_from_named_bus = False
 
 
 def _as_coord(value: Any) -> float | None:
