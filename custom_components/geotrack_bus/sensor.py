@@ -31,6 +31,8 @@ from .api import (
     STATUS_UNKNOWN,
     Stop,
 )
+from .busright_entity import async_setup_sensors
+from .const import CONF_PROVIDER, PROVIDER_BUSRIGHT
 from .coordinator import GeoTrackConfigEntry, GeoTrackCoordinator
 from .entity import GeoTrackBusEntity, GeoTrackStopEntity
 
@@ -220,6 +222,9 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up bus and stop sensors, adding them as new ones appear in the feed."""
+    if entry.data.get(CONF_PROVIDER) == PROVIDER_BUSRIGHT:
+        await async_setup_sensors(hass, entry, async_add_entities)
+        return
     coordinator = entry.runtime_data
     known: set[str] = set()
 

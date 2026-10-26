@@ -1,0 +1,129 @@
+blueprint:
+  name: School bus alerts
+  description: >-
+    Announce on your speakers and send a WhatsApp message when the school bus
+    is nearly at your stop, and again when it gets there. Works with any stop
+    from the GeoTrack Bus Tracking integration, whether it signs in to GeoTrack
+    or to BusRight. WhatsApp goes out through the WAHA integration.
+  domain: automation
+  source_url: https://github.com/airloeb/ha-geotrack-bus/blob/main/blueprints/automation/geotrack_bus/bus_alerts.yaml
+  input:
+    arriving_soon:
+      name: Arriving soon
+      description: The stop's "Arriving soon" sensor.
+      selector:
+        entity:
+          filter:
+            - integration: geotrack_bus
+              domain: binary_sensor
+    at_stop:
+      name: Bus at stop (optional)
+      description: The stop's "Bus at stop" sensor, to also say when it arrives.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - integration: geotrack_bus
+              domain: binary_sensor
+    who:
+      name: Who it is for
+      description: Used in the messages, e.g. "Dovi's bus".
+      default: The school bus
+      selector:
+        text:
+    speakers:
+      name: Speakers
+      description: Where to announce. Leave empty for no announcement.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: media_player
+    tts_engine:
+      name: Voice
+      description: The text-to-speech engine to speak with.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: tts
+    whatsapp_chat:
+      name: WhatsApp chat
+      description: >-
+        Chat id to message, e.g. 1203630000000000@g.us for a group or
+        17185550123@c.us for a person. Leave empty for no WhatsApp.
+      default: ""
+      selector:
+        text:
+    waha_session:
+      name: WAHA session
+      description: The WAHA session to send from.
+      default: default
+      selector:
+        text:
+
+mode: queued
+max: 4
+
+variables:
+  who: !input who
+  speakers: !input speakers
+  tts_engine: !input tts_engine
+  whatsapp_chat: !input whatsapp_chat
+  waha_session: !input waha_session
+  soon_entity: !input arriving_soon
+
+triggers:
+  - trigger: state
+    entity_id: !input arriving_soon
+    from: "off"
+    to: "on"
+    id: soon
+  - trigger: state
+    entity_id: !input at_stop
+    from: "off"
+    to: "on"
+    id: here
+
+actions:
+  - variables:
+      minutes: "{{ state_attr(soon_entity, 'eta_minutes') }}"
+      miles: "{{ state_attr(soon_entity, 'distance_miles') }}"
+      stops: "{{ state_attr(soon_entity, 'stops_away') }}"
+      detail: >-
+        {%- set bits = [] -%}
+        {%- if minutes is number -%}{%- set bits = bits + ['about ' ~ (minutes | round(0) | int) ~ ' minutes away'] -%}{%- endif -%}
+        {%- if miles is number -%}{%- set bits = bits + [(miles | round(1)) ~ ' miles out'] -%}{%- endif -%}
+        {%- if stops is number and stops > 0 -%}{%- set bits = bits + [stops ~ (' stop' if stops == 1 else ' stops') ~ ' to go'] -%}{%- endif -%}
+        {{ bits | join(', ') }}
+      spoken: >-
+        {%- if trigger.id == 'here' -%}{{ who }} is at the stop now.
+        {%- else -%}{{ who }} is almost here{{ ', ' ~ detail if detail else '' }}. Time to head out.
+        {%- endif -%}
+      written: >-
+        {%- if trigger.id == 'here' -%}🚌 {{ who }} is at the stop now.
+        {%- else -%}🚌 {{ who }} is almost here{{ ' (' ~ detail ~ ')' if detail else '' }}.
+        {%- endif -%}
+  - if:
+      - condition: template
+        value_template: "{{ speakers | count > 0 and tts_engine | string | length > 0 }}"
+    then:
+      - action: tts.speak
+        continue_on_error: true
+        target:
+          entity_id: "{{ tts_engine }}"
+        data:
+          media_player_entity_id: "{{ speakers }}"
+          message: "{{ spoken }}"
+  - if:
+      - condition: template
+        value_template: "{{ whatsapp_chat | trim != '' }}"
+    then:
+      - action: waha.send_text
+        continue_on_error: true
+        data:
+          session: "{{ waha_session }}"
+          chat_id: "{{ whatsapp_chat | trim }}"
+          text: "{{ written }}"

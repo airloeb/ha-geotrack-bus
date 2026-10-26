@@ -31,5 +31,15 @@ DEFAULT_WARNING_MINUTES: Final = 5
 MIN_WARNING_MINUTES: Final = 1
 MAX_WARNING_MINUTES: Final = 30
 
+# A second tracking service the same integration can sign in to. Entries
+# without a provider predate it and are GeoTrack.
+CONF_PROVIDER: Final = "provider"
+PROVIDER_GEOTRACK: Final = "geotrack"
+PROVIDER_BUSRIGHT: Final = "busright"
+CONF_EMAIL: Final = "email"
+CONF_REFRESH_TOKEN: Final = "refresh_token"
+# BusRight routes being followed, each with the one stop that is yours.
+CONF_ROUTES: Final = "routes"
 
 MANUFACTURER: Final = "GeoTrack"
+BUSRIGHT_MANUFACTURER: Final = "BusRight"

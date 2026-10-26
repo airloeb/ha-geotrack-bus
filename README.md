@@ -4,6 +4,9 @@ Brings your school bus from the GeoTrack parent portal (`parent.geotrackny.com`)
 into Home Assistant as a live map marker plus sensors you can build dashboards
 and notifications on.
 
+It can also sign in to the **BusRight** parent app instead — see
+[BusRight](#busright). Add the integration once per service.
+
 > Entity ids below use a placeholder bus `123` and stop `9`. Yours will use your
 > own bus and stop numbers — check **Settings → Devices & Services → Devices**
 > after setup.
@@ -259,6 +262,86 @@ actions:
         Bus 123 went by the stop at
         {{ state_attr('sensor.bus_123_stop_9_status', 'passed_at') }}.
 ```
+
+## BusRight
+
+BusRight has no parent website, only its phone app, so this signs in the way
+that app does. **Add Integration → GeoTrack Bus Tracking → BusRight app**,
+enter the email on your BusRight parent account, then the code BusRight emails
+you. Only a refresh token is stored; no password exists to store.
+
+Next you choose routes. The list is every route in your children's schools;
+the ones BusRight links to your child come pre-ticked. Schools often link a
+child to the morning route but not the afternoon one, so tick any others your
+child rides. For each route you then pick your stop (pre-selected where
+BusRight knows it). **Configure** lets you change routes, stops and warning
+thresholds later without signing in again.
+
+### What it creates
+
+One device per route:
+
+| Entity | Notes |
+| --- | --- |
+| `device_tracker.busright_<route>` | live position from the driver's tablet |
+| `sensor.busright_<route>_driver` | |
+| `sensor.busright_<route>_last_report` | when the tablet last sent a position |
+| `binary_sensor.busright_<route>_running` | BusRight says a run is in progress |
+| `binary_sensor.busright_<route>_moving` | position changed since the last poll |
+
+One device per stop of yours. A morning pick-up and an afternoon drop-off at
+the same house share one stop device, which follows whichever run is on:
+
+| Entity | Notes |
+| --- | --- |
+| `sensor.busright_stop_<street>_status` | `approaching` / `at_stop` / `passed` / `not_running` / `unknown` |
+| `sensor.busright_stop_<street>_distance_to_stop` | straight-line |
+| `sensor.busright_stop_<street>_stops_away` | stops the bus still has to make before yours |
+| `sensor.busright_stop_<street>_eta` | minutes, from the route's planned leg times |
+| `sensor.busright_stop_<street>_route_serving_this_stop` | |
+| `binary_sensor.busright_stop_<street>_arriving_soon` | same thresholds as GeoTrack |
+| `binary_sensor.busright_stop_<street>_bus_at_stop` | |
+| `binary_sensor.busright_stop_<street>_already_passed` | resets when the next run starts |
+
+The stop entities use the same names and states as GeoTrack's, so the same
+automations work for either.
+
+### How progress is worked out
+
+BusRight publishes the route (its stops in order) and the bus's position, but
+not how far along the route the bus is. That is tracked here, run by run:
+
+- A stop counts as reached when the bus comes within 100 m of it. Progress
+  only moves forward, a few stops at a time, so a later stop that happens to
+  sit beside an earlier one cannot make the bus leap ahead.
+- Your stop is **passed** once the bus has reached it, or come within 150 m,
+  and then pulled 150 m further away.
+- The **ETA** is BusRight's own planned time from the last stop reached to
+  yours, less the time since. It is unknown until the bus reaches its first
+  stop. Districts can hide planned times in the app; they are still in the
+  route data.
+- A new run is recognised by BusRight's session id for it, and everything
+  resets then.
+- A position older than 12 minutes is treated as stale, exactly as for
+  GeoTrack: no distance, no warning.
+
+The route is re-read every two minutes, which is also how soon a run starting
+or ending is noticed. During a run the position is polled at the configured
+interval.
+
+**Not yet confirmed against a live run:** the position document's speed and
+heading fields. They are passed through untouched as `reported_speed` and
+`reported_heading` on the tracker, not presented as a speed sensor, because
+their units are unknown. `moving` is worked out from the position instead.
+
+## Announcements and WhatsApp
+
+`blueprints/automation/geotrack_bus/bus_alerts.yaml` announces on your
+speakers and sends a WhatsApp message (through the WAHA integration) when a
+stop's **Arriving soon** turns on, and optionally again at **Bus at stop**.
+It works with GeoTrack and BusRight stops alike. Import it from
+**Settings → Automations → Blueprints → Import Blueprint** with the file's
+GitHub URL, then create one automation per child.
 
 ## Notes
 

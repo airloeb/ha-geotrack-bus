@@ -8,6 +8,8 @@ from homeassistant.components.device_tracker import SourceType, TrackerEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .busright_entity import async_setup_trackers
+from .const import CONF_PROVIDER, PROVIDER_BUSRIGHT
 from .coordinator import GeoTrackConfigEntry, GeoTrackCoordinator
 from .entity import GeoTrackBusEntity
 
@@ -18,6 +20,9 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up one tracker per bus, adding buses as they appear."""
+    if entry.data.get(CONF_PROVIDER) == PROVIDER_BUSRIGHT:
+        await async_setup_trackers(hass, entry, async_add_entities)
+        return
     coordinator = entry.runtime_data
     known: set[int] = set()
 

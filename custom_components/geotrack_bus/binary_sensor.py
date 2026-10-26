@@ -15,13 +15,16 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import STATUS_APPROACHING, STATUS_AT_STOP, STATUS_PASSED, Bus, Stop
+from .busright_entity import async_setup_binary_sensors
 from .const import (
+    CONF_PROVIDER,
     CONF_WARNING_MILES,
     CONF_WARNING_MINUTES,
     CONF_WARNING_STOPS,
     DEFAULT_WARNING_MILES,
     DEFAULT_WARNING_MINUTES,
     DEFAULT_WARNING_STOPS,
+    PROVIDER_BUSRIGHT,
 )
 from .coordinator import GeoTrackConfigEntry, GeoTrackCoordinator
 from .entity import GeoTrackBusEntity, GeoTrackStopEntity
@@ -120,6 +123,9 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up binary sensors, adding them as new buses and stops appear."""
+    if entry.data.get(CONF_PROVIDER) == PROVIDER_BUSRIGHT:
+        await async_setup_binary_sensors(hass, entry, async_add_entities)
+        return
     coordinator = entry.runtime_data
     known: set[str] = set()
 
