@@ -469,8 +469,15 @@ class BusRightApi:
         self._session = session
         self.auth = auth
 
-    async def _get(self, url: str, *, missing_ok: bool = False) -> Any:
-        """GET with a bearer token, renewing it once if it is refused."""
+    async def _get(
+        self, url: str, *, missing_ok: bool = False, refused_ok: bool = False
+    ) -> Any:
+        """GET with a bearer token, renewing it once if it is refused.
+
+        ``refused_ok`` treats a 401 as "not yours" (returns None) instead of a
+        dead sign-in, for endpoints that answer 401 to a valid token that lacks
+        access to that one resource.
+        """
         for attempt in (1, 2):
             token = await self.auth.async_id_token()
             try:
@@ -482,10 +489,22 @@ class BusRightApi:
                     },
                     timeout=REQUEST_TIMEOUT,
                 )
+                if response.status == 401 and refused_ok:
+                    _LOGGER.debug(
+                        "BusRight refused %s with HTTP 401; treating it as not yours",
+                        url.split("?")[0],
+                    )
+                    return None
                 if response.status == 401 and attempt == 1:
                     self.auth.invalidate()
                     continue
                 if response.status == 401:
+                    _LOGGER.warning(
+                        "BusRight refused %s with HTTP 401 after renewing the "
+                        "sign-in: %s",
+                        url.split("?")[0],
+                        (await response.text())[:200],
+                    )
                     raise BusRightAuthError("Signed-in token rejected")
                 if response.status in (403, 404) and missing_ok:
                     return None
@@ -524,6 +543,9 @@ class BusRightApi:
                 f"https://{API_V2_HOST}"
                 + STUDENTS_PATH.format(route_id=ref.route_id),
                 missing_ok=True,
+                # The students endpoint answers 401 "unauthorized" for routes
+                # your children don't ride, even with a good sign-in.
+                refused_ok=True,
             )
             stop_ids = parse_student_stops(payload) if payload else ()
             out.append(
