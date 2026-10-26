@@ -2,11 +2,12 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to the GeoTrack parent portal",
-        "description": "The portal has no password. Signing in with a texted code is the easier route — it works entirely from this screen.",
+        "title": "Connect a school bus tracker",
+        "description": "GeoTrack has no password: signing in with a texted code is the easier route. BusRight signs you in with a code sent to the email on your BusRight parent app account.",
         "menu_options": {
           "login": "Sign in with a code sent to my phone",
-          "cookie": "Paste a session cookie from my browser"
+          "cookie": "Paste a session cookie from my browser",
+          "busright": "BusRight app: sign in with a code sent to my email"
         }
       },
       "login": {
@@ -48,19 +49,53 @@
           "login": "Sign in with a code sent to my phone",
           "cookie": "Paste a session cookie from my browser"
         }
+      },
+      "busright": {
+        "title": "Sign in to BusRight",
+        "description": "Enter the email address you use for the BusRight parent app. BusRight will email it a sign-in code.",
+        "data": {
+          "email": "Email"
+        }
+      },
+      "busright_code": {
+        "title": "Enter your BusRight code",
+        "description": "Enter the code BusRight just emailed to {email}.",
+        "data": {
+          "code": "Sign-in code"
+        }
+      },
+      "busright_routes": {
+        "title": "Choose your routes",
+        "description": "These are the routes in your children's schools. Routes BusRight links to your child are ticked already. Tick any others your child rides, such as an afternoon route the school has not linked yet.",
+        "data": {
+          "routes": "Routes to follow"
+        }
+      },
+      "busright_stop": {
+        "title": "Your stop on {route}",
+        "description": "{hint}",
+        "data": {
+          "stop": "Your stop"
+        }
       }
     },
     "error": {
       "cannot_connect": "Could not reach the portal.",
       "invalid_auth": "The portal rejected that session. Sign in again and copy a fresh cookie.",
       "phone_not_found": "That phone number is not linked to any GeoTrack account.",
-      "cannot_request_code": "The portal would not send a login code. Check the number and try again.",
+      "cannot_request_code": "The service would not send a sign-in code. Check the number or email and try again.",
       "invalid_code": "That code was not accepted. It may have expired — go back and request a new one.",
-      "unexpected_response": "The portal returned something unexpected. It may have changed its login pages."
+      "unexpected_response": "The portal returned something unexpected. It may have changed its login pages.",
+      "cannot_connect_busright": "Could not reach BusRight.",
+      "no_route_selected": "Choose at least one route."
     },
     "abort": {
       "already_configured": "This portal is already set up.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "no_routes": "BusRight did not list any routes for this account.",
+      "no_stops": "BusRight returned that route without any stops.",
+      "invalid_auth": "BusRight no longer accepts this sign-in. Start again.",
+      "cannot_connect": "Could not reach BusRight."
     }
   },
   "options": {
@@ -79,7 +114,51 @@
           "warning_miles": "The warning fires when the bus is this close, whichever of the two thresholds trips first. Distance works on every route. Measured at 0.49 miles four minutes before arrival, so 0.75 lands around five minutes out.",
           "warning_stops": "Also fire when the bus is this many stops from yours. Exact and immune to a frozen feed, but only used where your stop is far enough down the route to have earlier stops to count -- a rider near the front of a route gets no runway, so the rule is skipped there."
         }
+      },
+      "init_busright": {
+        "title": "BusRight options",
+        "menu_options": {
+          "busright_settings": "Update interval and warnings",
+          "busright_routes": "Change routes or stops"
+        }
+      },
+      "busright_settings": {
+        "title": "Update interval and warnings",
+        "data": {
+          "scan_interval": "Update interval",
+          "warning_miles": "Warn me within this distance",
+          "warning_stops": "Warn me within this many stops"
+        },
+        "data_description": {
+          "scan_interval": "How often to check the bus while a run is on. Between runs it is checked every two minutes.",
+          "warning_miles": "Arriving soon turns on when the bus is this close in a straight line.",
+          "warning_stops": "Also turn on when the bus has only this many stops left to make before yours. Skipped when your stop is too near the start of the route for that to mean anything."
+        }
+      },
+      "busright_routes": {
+        "title": "Choose your routes",
+        "description": "These are the routes in your children's schools. Routes BusRight links to your child are ticked already. Tick any others your child rides, such as an afternoon route the school has not linked yet.",
+        "data": {
+          "routes": "Routes to follow"
+        }
+      },
+      "busright_stop": {
+        "title": "Your stop on {route}",
+        "description": "{hint}",
+        "data": {
+          "stop": "Your stop"
+        }
       }
+    },
+    "error": {
+      "no_route_selected": "Choose at least one route."
+    },
+    "abort": {
+      "no_routes": "BusRight did not list any routes for this account.",
+      "no_stops": "BusRight returned that route without any stops.",
+      "invalid_auth": "BusRight no longer accepts this sign-in. Re-authenticate first.",
+      "cannot_connect": "Could not reach BusRight.",
+      "not_loaded": "The integration is not running. Fix the connection first, then try again."
     }
   },
   "entity": {
@@ -110,7 +189,8 @@
           "at_stop": "At your stop",
           "passed": "Already passed",
           "unknown": "Unknown",
-          "no_info": "Not tracked"
+          "no_info": "Not tracked",
+          "not_running": "Not running"
         }
       },
       "distance": {
@@ -127,6 +207,12 @@
       },
       "serving_bus": {
         "name": "Bus serving this stop"
+      },
+      "driver": {
+        "name": "Driver"
+      },
+      "serving_route": {
+        "name": "Route serving this stop"
       }
     },
     "binary_sensor": {
@@ -141,6 +227,9 @@
       },
       "arriving_soon": {
         "name": "Arriving soon"
+      },
+      "running": {
+        "name": "Running"
       }
     }
   },
