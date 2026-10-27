@@ -334,6 +334,13 @@ heading fields. They are passed through untouched as `reported_speed` and
 `reported_heading` on the tracker, not presented as a speed sensor, because
 their units are unknown. `moving` is worked out from the position instead.
 
+**Finding BusRight's own ETA.** The app shows an ETA of its own, and where it
+comes from is not yet known. While a run is on, every distinct position
+document and the route's run-time fields are kept in memory (the last 600
+changes), next to what this integration worked out at the time. **Settings →
+Devices & Services → GeoTrack Bus Tracking → ⋮ → Download diagnostics** saves
+them. Your email, sign-in token, driver names and stop notes are left out.
+
 ## Announcements and WhatsApp
 
 `blueprints/automation/geotrack_bus/bus_alerts.yaml` announces on your

@@ -16,6 +16,7 @@ So that is worked out here, run by run, from the live position:
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -79,6 +80,9 @@ STOP_MATCH_M = 150.0
 SAME_STOP_M = 75.0
 # Below this the bus is parked or idling rather than driving.
 MOVING_M = 15.0
+# Snapshots of what BusRight sent during runs, for diagnostics. Only changes
+# are kept, so this covers several runs.
+CAPTURE_MAX = 600
 
 type BusRightConfigEntry = ConfigEntry[BusRightCoordinator]
 
@@ -334,6 +338,45 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
             self.statuses[watched.route_id] = RouteStatus(watched=watched)
         self._route_fetched: dict[str, datetime] = {}
         self._position_fetched: dict[str, datetime] = {}
+        self.capture: deque[dict[str, Any]] = deque(maxlen=CAPTURE_MAX)
+        self._last_capture: dict[str, dict[str, Any]] = {}
+
+    def _capture(self, status: RouteStatus, now: datetime) -> None:
+        """Record what BusRight sent while a run is on, when it has changed.
+
+        BusRight's app shows its own ETA, which this integration does not yet
+        know where to find. Keeping every distinct position document and the
+        route's run-time fields alongside what was worked out here shows both
+        where it lives and how far the two estimates differ.
+        """
+        route, position = status.route, status.position
+        if route is None or not (route.active or not status.position_stale):
+            return
+        seen = {
+            "route": route.name,
+            "position_updated": (
+                position.updated.isoformat() if position and position.updated else None
+            ),
+            "position_document": position.raw if position else None,
+            "route_fields": route.extra,
+            "stop_fields": route.stop_extra,
+        }
+        if self._last_capture.get(route.route_id) == seen:
+            return
+        self._last_capture[route.route_id] = seen
+        self.capture.append(
+            {
+                "time": now.isoformat(),
+                **seen,
+                "worked_out": {
+                    "status": status.status,
+                    "eta_minutes": status.eta_minutes,
+                    "stops_away": status.stops_away,
+                    "distance_m": status.distance_m,
+                    "last_stop_reached": status.last_reached,
+                },
+            }
+        )
 
     async def _async_refresh_route(self, status: RouteStatus, now: datetime) -> None:
         """Re-read the route when it is due, starting a new run if one began."""
@@ -401,6 +444,7 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
                 elif status.position_stale:
                     status.distance_m = None
                 describe(status, now)
+                self._capture(status, now)
         except BusRightAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except BusRightConnectionError as err:
