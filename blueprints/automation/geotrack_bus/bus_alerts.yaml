@@ -94,7 +94,7 @@ actions:
       stops: "{{ state_attr(soon_entity, 'stops_away') }}"
       detail: >-
         {%- set bits = [] -%}
-        {%- if minutes is number -%}{%- set bits = bits + ['about ' ~ (minutes | round(0) | int) ~ ' minutes away'] -%}{%- endif -%}
+        {%- if minutes is number and minutes >= 1 -%}{%- set m = minutes | round(0) | int -%}{%- set bits = bits + ['about ' ~ m ~ (' minute' if m == 1 else ' minutes') ~ ' away'] -%}{%- endif -%}
         {%- if miles is number -%}{%- set bits = bits + [(miles | round(1)) ~ ' miles out'] -%}{%- endif -%}
         {%- if stops is number and stops > 0 -%}{%- set bits = bits + [stops ~ (' stop' if stops == 1 else ' stops') ~ ' to go'] -%}{%- endif -%}
         {{ bits | join(', ') }}

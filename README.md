@@ -324,6 +324,19 @@ not how far along the route the bus is. That is tracked here, run by run:
   resets then.
 - A position older than 12 minutes is treated as stale, exactly as for
   GeoTrack: no distance, no warning.
+- BusRight's position document can hold more than one coordinate pair. On
+  the first live run a fixed point at the route's school stop rode along with
+  the bus's own, and which came first varied from read to read. The bus is
+  the pair that moves: a pair repeated exactly while another changes is
+  remembered as a fixed place and ignored. A fix further from the last one
+  than a bus could drive is also held back until the next few fixes bear it
+  out.
+- Until the bus reaches its first stop of a run, it can only be matched to
+  stops up to yours, so one stray fix near a later stop cannot mark yours as
+  passed before the bus has set off.
+- The ETA never drops below the time needed to cover the straight-line
+  distance at 30 mph, so a bus running behind the plan is not announced as
+  "0 minutes away" while still a mile off.
 
 The route is re-read every two minutes, which is also how soon a run starting
 or ending is noticed. During a run the position is polled at the configured
@@ -339,7 +352,7 @@ comes from is not yet known. While a run is on, every distinct position
 document and the route's run-time fields are kept in memory (the last 600
 changes), next to what this integration worked out at the time. **Settings →
 Devices & Services → GeoTrack Bus Tracking → ⋮ → Download diagnostics** saves
-them. Your email, sign-in token, driver names and stop notes are left out.
+them, along with any coordinate pairs being ignored as fixed places. Your email, sign-in token, driver names and stop notes are left out.
 
 ## Announcements and WhatsApp
 
