@@ -24,7 +24,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfLength, UnitOfTime
+from homeassistant.const import UnitOfLength, UnitOfSpeed, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -152,6 +152,18 @@ class BusRightSensorDescription(SensorEntityDescription):
 
 ROUTE_SENSORS: tuple[BusRightSensorDescription, ...] = (
     BusRightSensorDescription(
+        key="speed",
+        translation_key="speed",
+        device_class=SensorDeviceClass.SPEED,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
+        suggested_unit_of_measurement=UnitOfSpeed.MILES_PER_HOUR,
+        suggested_display_precision=0,
+        value_fn=lambda s: (
+            s.position.speed if s.position and not s.position_stale else None
+        ),
+    ),
+    BusRightSensorDescription(
         key="driver",
         translation_key="driver",
         icon="mdi:card-account-details-outline",
@@ -184,6 +196,8 @@ STOP_SENSORS: tuple[BusRightSensorDescription, ...] = (
             "route": s.watched.name,
             "stop_address": s.watched.stop_label,
             "passed_at": s.passed_at.isoformat() if s.passed_at else None,
+            "skipped": s.skipped,
+            "from_busright": s.from_busright,
             "last_stop_reached": s.last_reached,
             "running": s.running,
             "position_stale": s.position_stale,
@@ -223,7 +237,9 @@ STOP_SENSORS: tuple[BusRightSensorDescription, ...] = (
         suggested_display_precision=0,
         value_fn=lambda s: s.eta_minutes,
         attributes_fn=lambda s: {
-            "basis": "planned time from the last stop reached",
+            # "busright" is BusRight's own live ETA, as its app shows; "planned"
+            # is its route plan, counted from the last stop reached.
+            "source": s.eta_source,
             "last_stop_reached": s.last_reached,
         },
     ),
@@ -331,7 +347,7 @@ STOP_BINARY_SENSORS: tuple[BusRightBinaryDescription, ...] = (
         key="arriving_soon",
         translation_key="arriving_soon",
         icon="mdi:bus-clock",
-        value_fn=lambda s: None,  # needs the options; see is_on below
+        value_fn=lambda s: s.warning is not None,
     ),
     BusRightBinaryDescription(
         key="at_stop",
@@ -346,28 +362,6 @@ STOP_BINARY_SENSORS: tuple[BusRightBinaryDescription, ...] = (
         value_fn=lambda s: s.status == STATUS_PASSED,
     ),
 )
-
-
-def arriving_soon(coordinator: BusRightCoordinator, status: RouteStatus) -> str | None:
-    """Which warning threshold the bus is inside, if any.
-
-    The same two thresholds as GeoTrack, whichever trips first: straight-line
-    distance, or stops left before yours. The stop count is skipped when your
-    stop is so near the front of the route that it would be inside the
-    threshold from the moment the run starts.
-    """
-    if status.status != STATUS_APPROACHING or status.position_stale:
-        return None
-    options = coordinator.config_entry.options or {}
-    miles = float(options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES))
-    stops = int(options.get(CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS))
-
-    if status.distance_m is not None and status.distance_m <= miles * MILES:
-        return "distance"
-    has_runway = status.my_index is not None and status.my_index > stops
-    if has_runway and status.stops_away is not None and status.stops_away <= stops:
-        return "stops_away"
-    return None
 
 
 class BusRightRouteBinarySensor(BusRightRouteEntity, BinarySensorEntity):
@@ -414,8 +408,6 @@ class BusRightStopBinarySensor(BusRightStopEntity, BinarySensorEntity):
         status = self.status
         if status is None:
             return None
-        if self.entity_description.key == "arriving_soon":
-            return arriving_soon(self.coordinator, status) is not None
         return self.entity_description.value_fn(status)
 
     @property
@@ -426,10 +418,11 @@ class BusRightStopBinarySensor(BusRightStopEntity, BinarySensorEntity):
             return None
         options = self.coordinator.config_entry.options or {}
         return {
-            "triggered_by": arriving_soon(self.coordinator, status),
+            "triggered_by": status.warning,
             "distance_miles": _miles(status.distance_m),
             "stops_away": status.stops_away,
             "eta_minutes": status.eta_minutes,
+            "eta_source": status.eta_source,
             "warning_miles": options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES),
             "warning_stops": options.get(CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS),
             "route": status.watched.name,
@@ -476,17 +469,18 @@ class BusRightTracker(BusRightRouteEntity, TrackerEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the rest of the feed for templates and dashboards."""
         status = self.status
-        raw = status.position.raw if status.position else {}
+        position = status.position
         return {
             "route": status.watched.name,
             "driver": status.route.driver if status.route else None,
             "running": status.running,
             "position_stale": status.position_stale,
             "position_age_minutes": _minutes(status),
-            # Passed through untouched: BusRight's units for these are not
-            # documented, so they are not presented as a speed or a heading.
-            "reported_speed": raw.get("speed"),
-            "reported_heading": raw.get("heading", raw.get("bearing")),
+            "speed_mph": (
+                None if position is None or position.speed is None
+                else round(position.speed * 2.23694)
+            ),
+            "bearing": position.bearing if position else None,
         }
 
 

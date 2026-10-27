@@ -1,16 +1,24 @@
 """Polling coordinator for BusRight routes.
 
-BusRight says where the bus is and which stops the route makes, but not how far
-along the route the bus has got -- the parent app has no "N stops away" to read.
-So that is worked out here, run by run, from the live position:
+The driver's tablet keeps BusRight's own account of each run in the position
+document: every stop marked pending, completed or skipped, and a live ETA for
+each stop still ahead (the figure the parent app shows). When that is there it
+is used as it stands:
 
-* A stop counts as **reached** when the bus comes within ``REACH_M`` of it.
-  Progress only moves forward, and only a few stops at a time, so a later stop
-  that happens to sit beside an earlier one cannot make the bus leap ahead.
-* Your stop is **passed** once the bus has reached it (or come close) and then
-  pulled away again.
-* Everything resets when BusRight starts a new run, which it marks with a new
-  ``sessionId`` on the route.
+* **Stops away** is the stops before yours still pending.
+* Your stop is **passed** once BusRight marks it completed or skipped.
+* The **ETA** is BusRight's live ETA for your stop.
+
+When it is not, the same is worked out from the live position: a stop counts
+as reached when the bus comes within ``REACH_M`` of it, progress only moves
+forward a few stops at a time, and your stop is passed once the bus has been
+there and pulled away.
+
+Either way, once the bus is at your stop it is not reported as approaching
+again, and once the arriving-soon warning is on it stays on until the stop is
+passed, so a bus idling at the threshold does not set it off twice.
+Everything resets when BusRight starts a new run, marked by a new
+``sessionId`` on the route.
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ from .api import (
     haversine_meters,
 )
 from .busright_api import (
+    STOP_SKIPPED,
     BusRightApi,
     BusRightAuthError,
     BusRightConnectionError,
@@ -46,7 +55,11 @@ from .busright_api import (
 from .const import (
     CONF_REFRESH_TOKEN,
     CONF_ROUTES,
+    CONF_WARNING_MILES,
+    CONF_WARNING_STOPS,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_WARNING_MILES,
+    DEFAULT_WARNING_STOPS,
     DOMAIN,
 )
 
@@ -80,6 +93,10 @@ STOP_MATCH_M = 150.0
 SAME_STOP_M = 75.0
 # Below this the bus is parked or idling rather than driving.
 MOVING_M = 15.0
+MOVING_MPS = 0.5
+MILES = 1609.344
+ETA_BUSRIGHT = "busright"
+ETA_PLANNED = "planned"
 # A fix this far from the last one, faster than a bus can drive, is not the
 # bus: the first live run saw the position flick to a fixed point 2 km away
 # every few reads. Such a jump is only believed once it repeats in a row.
@@ -170,7 +187,14 @@ class RunState:
     reached_at: datetime | None = None
     closest_m: float | None = None
     passed_at: datetime | None = None
+    skipped: bool = False
     arrived: bool = False
+    # Which threshold first set off the arriving-soon warning on this run. It
+    # stays on from then until the stop is passed.
+    warned: str | None = None
+    # From BusRight's own record of the run, when the document carries one.
+    pending_before: int | None = None
+    live_eta: datetime | None = None
     # Fixes too far from the last believed one, waiting to be confirmed.
     jumps: list[Position] = field(default_factory=list)
 
@@ -189,8 +213,14 @@ class RouteStatus:
     distance_m: float | None = None
     stops_away: int | None = None
     eta_minutes: float | None = None
+    eta_source: str | None = None
     last_reached: str | None = None
     passed_at: datetime | None = None
+    skipped: bool = False
+    # Which threshold set off the arriving-soon warning, while it is on.
+    warning: str | None = None
+    # Whether this poll's progress came from BusRight's record of the run.
+    from_busright: bool = False
     run: RunState = field(default_factory=RunState)
 
     @property
@@ -222,11 +252,51 @@ def match_stop(route: Route, watched: WatchedRoute) -> int | None:
     return best[1] if best else None
 
 
-def advance(status: RouteStatus, now: datetime) -> None:
+def apply_progress(status: RouteStatus, now: datetime) -> bool:
+    """Take the run's progress from BusRight's own record, if it has one.
+
+    Returns whether it did. The record is only trusted for the run BusRight
+    says is on: between runs the document still holds the last one.
+    """
+    route, position, run = status.route, status.position, status.run
+    progress = position.progress if position else None
+    if (
+        route is None
+        or progress is None
+        or not progress.stops
+        or not route.active
+        or status.my_index is None
+        or (route.session_id and progress.session_id
+            and route.session_id != progress.session_id)
+    ):
+        return False
+    mine_on_route = route.stops[status.my_index]
+    mine = progress.stop(mine_on_route.stop_id, status.my_index)
+    if mine is None:
+        return False
+
+    done = [stop.index for stop in progress.stops if stop.done]
+    furthest = max(done, default=-1)
+    if furthest > run.reached_index and furthest < len(route.stops):
+        run.reached_index = furthest
+        run.reached_at = now
+    run.pending_before = sum(
+        1 for stop in progress.stops if stop.index < status.my_index and not stop.done
+    )
+    run.live_eta = progress.live_etas.get(mine.stop_id or mine_on_route.stop_id or "")
+    if mine.done and run.passed_at is None:
+        run.passed_at = mine.done_at or now
+        run.skipped = mine.state == STOP_SKIPPED
+    return True
+
+
+def advance(status: RouteStatus, now: datetime, from_busright: bool = False) -> None:
     """Fold a fresh position into the run and recompute what it means.
 
     Expects ``status.route``, ``status.position`` and ``status.my_index`` to be
-    current, and ``status.position_stale`` to be false.
+    current, and ``status.position_stale`` to be false. With ``from_busright``
+    the stops reached already came from BusRight, so only the distance-based
+    parts run here.
     """
     route, position, run = status.route, status.position, status.run
     assert route is not None and position is not None
@@ -244,7 +314,7 @@ def advance(status: RouteStatus, now: datetime) -> None:
         end = status.my_index + 1
     else:
         end = len(route.stops)
-    window = route.stops[start:end]
+    window = [] if from_busright else route.stops[start:end]
     hits = [
         (position.distance_to(stop.latitude, stop.longitude), stop.index)
         for stop in window
@@ -278,8 +348,10 @@ def describe(status: RouteStatus, now: datetime) -> None:
     """Set the status fields entities read, from the run so far."""
     route, run = status.route, status.run
     status.passed_at = run.passed_at
+    status.skipped = run.skipped
     status.stops_away = None
     status.eta_minutes = None
+    status.eta_source = None
     status.last_reached = None
 
     if route is None:
@@ -303,16 +375,25 @@ def describe(status: RouteStatus, now: datetime) -> None:
             status.distance_m = None
         return
 
-    if status.distance_m is not None and status.distance_m <= AT_STOP_M:
-        status.status = STATUS_AT_STOP
+    # Once at the stop, stay there until it is passed: a bus pulling forward
+    # a few metres, or a jittery fix, must not read as approaching again.
+    status.status = STATUS_AT_STOP if run.arrived else STATUS_APPROACHING
+
+    if status.from_busright and run.pending_before is not None:
+        status.stops_away = run.pending_before
     else:
-        status.status = STATUS_APPROACHING
+        status.stops_away = max(0, status.my_index - run.reached_index - 1)
 
-    status.stops_away = max(0, status.my_index - run.reached_index - 1)
+    if status.from_busright and run.live_eta is not None:
+        status.eta_minutes = round(
+            max(0.0, (run.live_eta - now).total_seconds()) / 60, 1
+        )
+        status.eta_source = ETA_BUSRIGHT
+        return
 
-    # BusRight's planner times each leg of the route. From the last stop the
-    # bus reached, the planned time left to yours, less the time since, is
-    # a fair estimate -- and the only one available until a stop is reached.
+    # Without BusRight's live ETA: its planner times each leg of the route.
+    # From the last stop the bus reached, the planned time left to yours, less
+    # the time since.
     mine = route.stops[status.my_index]
     if run.reached_index >= 0 and run.reached_at is not None:
         last = route.stops[run.reached_index]
@@ -325,6 +406,55 @@ def describe(status: RouteStatus, now: datetime) -> None:
             if status.distance_m is not None:
                 remaining = max(remaining, status.distance_m / FLOOR_SPEED_MPS)
             status.eta_minutes = round(max(0.0, remaining) / 60, 1)
+            status.eta_source = ETA_PLANNED
+
+
+def warn(status: RouteStatus, options: dict[str, Any]) -> None:
+    """Decide whether the arriving-soon warning is on.
+
+    Two thresholds, whichever trips first: straight-line distance, and stops
+    left before yours. The stop count is skipped when your stop is so near the
+    start of the route that it would be inside the threshold from the moment
+    the run starts. Once on, the warning holds until the stop is passed or the
+    run ends -- a bus idling right at the threshold distance flicked it on, off
+    and on again, and the alert went out twice.
+
+    BusRight's own ETA is deliberately not a threshold. It assumes the bus
+    leaves each stop at once: on the first afternoon run it read about five
+    minutes for the whole quarter of an hour the bus sat loading at the
+    schools, and would have sent everyone out fifteen minutes early.
+    """
+    route, run = status.route, status.run
+    if route is None or not route.active or status.status in (
+        STATUS_PASSED, STATUS_NOT_RUNNING
+    ):
+        status.warning = None
+        return
+    if run.warned:
+        status.warning = run.warned
+        return
+    status.warning = None
+    if status.status not in (STATUS_APPROACHING, STATUS_AT_STOP) or status.position_stale:
+        return
+
+    miles = float(options.get(CONF_WARNING_MILES, DEFAULT_WARNING_MILES))
+    stops = int(options.get(CONF_WARNING_STOPS, DEFAULT_WARNING_STOPS))
+
+    reason = None
+    if status.status == STATUS_AT_STOP:
+        reason = "at_stop"
+    elif status.distance_m is not None and status.distance_m <= miles * MILES:
+        reason = "distance"
+    elif (
+        status.my_index is not None
+        and status.my_index > stops
+        and status.stops_away is not None
+        and status.stops_away <= stops
+    ):
+        reason = "stops_away"
+    if reason:
+        run.warned = reason
+        status.warning = reason
 
 
 class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
@@ -395,6 +525,9 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
                 **seen,
                 "worked_out": {
                     "status": status.status,
+                    "from_busright": status.from_busright,
+                    "warning": status.warning,
+                    "eta_source": status.eta_source,
                     "eta_minutes": status.eta_minutes,
                     "stops_away": status.stops_away,
                     "distance_m": status.distance_m,
@@ -459,6 +592,9 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
         status.position = position or previous
         age = status.position.age if status.position else None
         status.position_stale = age is None or age > MAX_POSITION_AGE
+        if position is not None and position.speed is not None and not status.position_stale:
+            status.moving = position.speed > MOVING_MPS
+            return
         if position is None or previous is None or status.position_stale:
             status.moving = None if status.position_stale else status.moving
             return
@@ -531,11 +667,14 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
             for status in self.statuses.values():
                 await self._async_refresh_route(status, now)
                 await self._async_refresh_position(status, now)
+                status.from_busright = False
                 if status.route and status.route.active and not status.position_stale:
-                    advance(status, now)
+                    status.from_busright = apply_progress(status, now)
+                    advance(status, now, status.from_busright)
                 elif status.position_stale:
                     status.distance_m = None
                 describe(status, now)
+                warn(status, self.config_entry.options or {})
                 self._capture(status, now)
         except BusRightAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err

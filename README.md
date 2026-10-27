@@ -287,7 +287,8 @@ One device per route:
 | `sensor.busright_<route>_driver` | |
 | `sensor.busright_<route>_last_report` | when the tablet last sent a position |
 | `binary_sensor.busright_<route>_running` | BusRight says a run is in progress |
-| `binary_sensor.busright_<route>_moving` | position changed since the last poll |
+| `sensor.busright_<route>_speed` | the tablet's GPS speed |
+| `binary_sensor.busright_<route>_moving` | GPS speed above walking pace |
 
 One device per stop of yours. A morning pick-up and an afternoon drop-off at
 the same house share one stop device, which follows whichever run is on:
@@ -297,7 +298,7 @@ the same house share one stop device, which follows whichever run is on:
 | `sensor.busright_stop_<street>_status` | `approaching` / `at_stop` / `passed` / `not_running` / `unknown` |
 | `sensor.busright_stop_<street>_distance_to_stop` | straight-line |
 | `sensor.busright_stop_<street>_stops_away` | stops the bus still has to make before yours |
-| `sensor.busright_stop_<street>_eta` | minutes, from the route's planned leg times |
+| `sensor.busright_stop_<street>_eta` | minutes, BusRight's own live ETA |
 | `sensor.busright_stop_<street>_route_serving_this_stop` | |
 | `binary_sensor.busright_stop_<street>_arriving_soon` | same thresholds as GeoTrack |
 | `binary_sensor.busright_stop_<street>_bus_at_stop` | |
@@ -308,51 +309,67 @@ automations work for either.
 
 ### How progress is worked out
 
-BusRight publishes the route (its stops in order) and the bus's position, but
-not how far along the route the bus is. That is tracked here, run by run:
+The driver's tablet keeps BusRight's own record of each run in the bus's
+position document: its GPS fix (`lastLocation`, with speed and heading), each
+stop marked pending, completed or skipped, and a live ETA for every stop still
+ahead. That record is used as it stands:
+
+- **Stops away** is the stops before yours BusRight still has as pending.
+- Your stop is **passed** the moment BusRight marks it completed or skipped,
+  at the time BusRight gives. `skipped` on the status sensor says which.
+- The **ETA** is BusRight's live ETA for your stop, the figure its app shows.
+  The ETA sensor's `source` attribute reads `busright`.
+- **At stop** comes on within 75 m of your stop and stays on until the stop is
+  passed. A bus pulling forward a few metres does not read as approaching
+  again.
+- **Arriving soon** fires on distance (default 0.55 mi) or stops left
+  (default 1), whichever comes first. Once on, it stays on until the stop is
+  passed or the run ends, so a bus idling right at the threshold does not set
+  the alert off twice. `triggered_by` says which threshold fired.
+
+**Arriving soon ignores BusRight's ETA, on purpose.** BusRight's ETA assumes the
+bus leaves each stop straight away. On the first afternoon run it read about
+five minutes for the whole quarter of an hour the bus sat loading at the
+schools, and in the last stretch it ran about two minutes short. Distance fired
+4.4 minutes before the bus arrived.
+
+When the document has no such record, the same is worked out from the
+position alone:
 
 - A stop counts as reached when the bus comes within 100 m of it. Progress
   only moves forward, a few stops at a time, so a later stop that happens to
   sit beside an earlier one cannot make the bus leap ahead.
-- Your stop is **passed** once the bus has reached it, or come within 150 m,
+- Your stop is passed once the bus has reached it, or come within 150 m,
   and then pulled 150 m further away.
-- The **ETA** is BusRight's own planned time from the last stop reached to
-  yours, less the time since. It is unknown until the bus reaches its first
-  stop. Districts can hide planned times in the app; they are still in the
-  route data.
+- The ETA is BusRight's planned time from the last stop reached to yours, less
+  the time since. It never drops below the straight-line distance at 30 mph.
+  The ETA sensor's `source` attribute reads `planned`.
+- Until the bus reaches its first stop of a run, it can only be matched to
+  stops up to yours.
+
+Either way:
+
 - A new run is recognised by BusRight's session id for it, and everything
-  resets then.
+  resets then. BusRight's record is only used for the run in progress; between
+  runs the document still holds the last one.
 - A position older than 12 minutes is treated as stale, exactly as for
   GeoTrack: no distance, no warning.
-- BusRight's position document can hold more than one coordinate pair. On
-  the first live run a fixed point at the route's school stop rode along with
-  the bus's own, and which came first varied from read to read. The bus is
-  the pair that moves: a pair repeated exactly while another changes is
-  remembered as a fixed place and ignored. A fix further from the last one
-  than a bus could drive is also held back until the next few fixes bear it
-  out.
-- Until the bus reaches its first stop of a run, it can only be matched to
-  stops up to yours, so one stray fix near a later stop cannot mark yours as
-  passed before the bus has set off.
-- The ETA never drops below the time needed to cover the straight-line
-  distance at 30 mph, so a bus running behind the plan is not announced as
-  "0 minutes away" while still a mile off.
+- The position document also holds `lastReroute`, where the route was last
+  re-planned: a past position that stays put. The bus's position is always read
+  from `lastLocation`. Without that field, the coordinate pair that moves is
+  taken as the bus, and a jump further than a bus could drive is held back
+  until the next few fixes bear it out.
 
 The route is re-read every two minutes, which is also how soon a run starting
 or ending is noticed. During a run the position is polled at the configured
-interval.
+interval. `sensor.busright_<route>_speed` is the tablet's GPS speed.
 
-**Not yet confirmed against a live run:** the position document's speed and
-heading fields. They are passed through untouched as `reported_speed` and
-`reported_heading` on the tracker, not presented as a speed sensor, because
-their units are unknown. `moving` is worked out from the position instead.
-
-**Finding BusRight's own ETA.** The app shows an ETA of its own, and where it
-comes from is not yet known. While a run is on, every distinct position
-document and the route's run-time fields are kept in memory (the last 600
-changes), next to what this integration worked out at the time. **Settings →
-Devices & Services → GeoTrack Bus Tracking → ⋮ → Download diagnostics** saves
-them, along with any coordinate pairs being ignored as fixed places. Your email, sign-in token, driver names and stop notes are left out.
+**Diagnostics.** While a run is on, every distinct position document and the
+route's run-time fields are kept in memory (the last 600 changes), next to what
+this integration worked out at the time. **Settings → Devices & Services →
+GeoTrack Bus Tracking → ⋮ → Download diagnostics** saves them, along with any
+coordinate pairs being ignored as fixed places. Your email, sign-in token,
+driver names and stop notes are left out.
 
 ## Announcements and WhatsApp
 
