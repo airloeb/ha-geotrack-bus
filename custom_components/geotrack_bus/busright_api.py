@@ -123,6 +123,21 @@ class RouteStop:
     scheduled_offset: int | None
 
 
+# Stop fields seen on a route at rest. Anything else on a stop appeared while a
+# run was on, and is recorded in case it carries BusRight's own arrival times.
+STATIC_STOP_KEYS = frozenset({
+    "latitude", "longitude", "coord", "address", "stopId", "numberOfStudents",
+    "isAnchor", "avoidUturns", "eta", "__typename", "notes",
+    "notesLastEditedTimestamp", "notesLastEditedBy",
+})
+# Route fields that are bulky, personal, or already parsed; left out of the
+# record of what else the route carries.
+UNRECORDED_ROUTE_KEYS = frozenset({
+    "stops", "overviewPolyline", "assignedDriver", "startLocation",
+    "endLocation", "editLockedBy",
+})
+
+
 @dataclass
 class Route:
     """A route as BusRight describes it, independent of any live position."""
@@ -135,6 +150,10 @@ class Route:
     driver: str | None
     schedule_type: str | None
     stops: list[RouteStop] = field(default_factory=list)
+    # Everything else the route carries, kept for diagnostics: BusRight's own
+    # ETA is somewhere, and this is where to look for it.
+    extra: dict[str, Any] = field(default_factory=dict)
+    stop_extra: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, route_id: str, payload: Any) -> Route:
@@ -147,9 +166,13 @@ class Route:
         driver = data.get("assignedDriver") or {}
 
         stops: list[RouteStop] = []
-        for raw in data.get("stops") or []:
+        stop_extra: list[dict[str, Any]] = []
+        for position, raw in enumerate(data.get("stops") or []):
             if not isinstance(raw, dict):
                 continue
+            unusual = {k: v for k, v in raw.items() if k not in STATIC_STOP_KEYS}
+            if unusual:
+                stop_extra.append({"stop": position + 1, **unusual})
             coord = raw.get("coord") if isinstance(raw.get("coord"), dict) else {}
             lat = _as_float(raw.get("latitude", coord.get("latitude")))
             lng = _as_float(raw.get("longitude", coord.get("longitude")))
@@ -175,6 +198,11 @@ class Route:
             driver=driver.get("preferredName") or driver.get("fullName") or None,
             schedule_type=data.get("scheduleType"),
             stops=stops,
+            extra={
+                **{k: v for k, v in detail.items() if k not in ("routeData", "data")},
+                **{k: v for k, v in data.items() if k not in UNRECORDED_ROUTE_KEYS},
+            },
+            stop_extra=stop_extra,
         )
 
 
