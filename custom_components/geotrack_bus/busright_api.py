@@ -206,6 +206,50 @@ class Route:
         )
 
 
+STOP_COMPLETED = "completed"
+STOP_SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class StopProgress:
+    """How one stop stands on the current run, as BusRight records it."""
+
+    index: int
+    stop_id: str | None
+    state: str
+    done_at: datetime | None
+
+    @property
+    def done(self) -> bool:
+        """Whether the bus has finished with this stop, served or skipped."""
+        return self.state in (STOP_COMPLETED, STOP_SKIPPED)
+
+
+@dataclass(frozen=True)
+class Progress:
+    """BusRight's own account of the run, from the position document.
+
+    The driver's tablet marks each stop completed (or skipped) as it goes and
+    keeps a live ETA for every stop still ahead -- the figure the parent app
+    shows.
+    """
+
+    session_id: str | None
+    stops: tuple[StopProgress, ...]
+    live_etas: dict[str, datetime]
+
+    def stop(self, stop_id: str | None, index: int) -> StopProgress | None:
+        """Find a stop by id, or failing that by its place in the route."""
+        if stop_id:
+            for stop in self.stops:
+                if stop.stop_id == stop_id:
+                    return stop
+        for stop in self.stops:
+            if stop.index == index:
+                return stop
+        return None
+
+
 @dataclass(frozen=True)
 class Position:
     """The bus's live position as last written by the driver's tablet."""
@@ -217,6 +261,10 @@ class Position:
     # Every coordinate pair the document held, the bus's included, so fixed
     # places riding along in the document can be recognised over time.
     candidates: frozenset[tuple[float, float]] = frozenset()
+    # Metres per second and degrees, from the tablet's GPS.
+    speed: float | None = None
+    bearing: float | None = None
+    progress: Progress | None = None
 
     @property
     def age(self) -> timedelta | None:
@@ -352,15 +400,77 @@ def pick_lat_lng(
     return lat, lng
 
 
+def _from_epoch(value: Any) -> datetime | None:
+    """A Unix timestamp in seconds as an aware datetime."""
+    seconds = _as_float(value)
+    if seconds is None or seconds <= 0:
+        return None
+    return dt_util.utc_from_timestamp(seconds)
+
+
+def parse_progress(data: dict[str, Any]) -> Progress | None:
+    """BusRight's per-stop statuses and live ETAs, when the document has them."""
+    raw_stops = data.get("stops")
+    if not isinstance(raw_stops, list):
+        return None
+    stops: list[StopProgress] = []
+    for position, raw in enumerate(raw_stops):
+        if not isinstance(raw, dict):
+            continue
+        state = str(raw.get("stopStatus") or "pending")
+        if raw.get("stopSkippedAt") and state != STOP_COMPLETED:
+            state = STOP_SKIPPED
+        stops.append(
+            StopProgress(
+                index=_as_int(raw.get("stopIndex")) if raw.get("stopIndex") is not None else position,
+                stop_id=raw.get("stopId"),
+                state=state,
+                done_at=_from_epoch(raw.get("stopCompletedAt") or raw.get("stopSkippedAt")),
+            )
+        )
+    etas: dict[str, datetime] = {}
+    for raw in data.get("liveEtas") or []:
+        if isinstance(raw, dict) and raw.get("stopId"):
+            when = _from_epoch(raw.get("eta"))
+            if when is not None:
+                etas[raw["stopId"]] = when
+    return Progress(session_id=data.get("sessionId"), stops=tuple(stops), live_etas=etas)
+
+
 def parse_position(
     document: Any,
     near: tuple[float, float] | None = None,
     fixed: frozenset[tuple[float, float]] | set[tuple[float, float]] = frozenset(),
 ) -> Position | None:
-    """Turn a Firestore document into a Position, if it holds one."""
+    """Turn a Firestore document into a Position, if it holds one.
+
+    The tablet writes its fix to ``lastLocation``. The document also carries
+    other coordinates -- ``lastReroute`` is where the route was last re-planned,
+    a past position that stays put -- so ``lastLocation`` is used whenever it
+    is there, and the general search only when it is not.
+    """
     if not isinstance(document, dict):
         return None
     data = decode_fields(document.get("fields") or {})
+    candidates = frozenset(_point(lat, lng) for _, lat, lng in lat_lng_candidates(data))
+    progress = parse_progress(data)
+
+    last = data.get("lastLocation") if isinstance(data.get("lastLocation"), dict) else {}
+    coord = last.get("coord") if isinstance(last.get("coord"), dict) else {}
+    lat, lng = _as_float(coord.get("latitude")), _as_float(coord.get("longitude"))
+    if lat is not None and lng is not None:
+        return Position(
+            latitude=lat,
+            longitude=lng,
+            updated=_from_epoch(last.get("timestamp"))
+            or dt_util.parse_datetime(document.get("updateTime") or ""),
+            raw=data,
+            candidates=candidates,
+            speed=_as_float(last.get("speed")),
+            bearing=_as_float(last.get("bearing")),
+            progress=progress,
+        )
+
     found = pick_lat_lng(data, near, fixed)
     if found is None:
         return None
@@ -372,7 +482,8 @@ def parse_position(
         longitude=found[1],
         updated=updated,
         raw=data,
-        candidates=frozenset(_point(lat, lng) for _, lat, lng in lat_lng_candidates(data)),
+        candidates=candidates,
+        progress=progress,
     )
 
 
