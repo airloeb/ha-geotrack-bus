@@ -214,6 +214,9 @@ class Position:
     longitude: float
     updated: datetime | None
     raw: dict[str, Any]
+    # Every coordinate pair the document held, the bus's included, so fixed
+    # places riding along in the document can be recognised over time.
+    candidates: frozenset[tuple[float, float]] = frozenset()
 
     @property
     def age(self) -> timedelta | None:
@@ -280,38 +283,97 @@ def decode_fields(fields: dict[str, Any]) -> dict[str, Any]:
     return {key: decode_firestore(val) for key, val in fields.items()}
 
 
-def find_lat_lng(obj: Any, depth: int = 0) -> tuple[float, float] | None:
-    """Find a latitude/longitude pair anywhere in a decoded document.
+# Words in a field's path that mark a fixed place rather than the bus itself.
+# On the first live run the document carried a second coordinate pair at the
+# route's school stop, and which of the two came first varied from read to read.
+FIXED_PLACE_HINTS = (
+    "stop", "school", "start", "end", "dest", "next", "home", "depot",
+    "target", "origin", "pickup", "dropoff",
+)
+LIVE_HINTS = ("location", "position", "current", "last", "gps", "live", "vehicle")
 
-    Only the presence of the pair is known for certain -- the live position was
-    first located by searching the document for it -- so search rather than
+
+def lat_lng_candidates(
+    obj: Any, path: tuple[str, ...] = ()
+) -> list[tuple[tuple[str, ...], float, float]]:
+    """Every latitude/longitude pair in a decoded document, with where it sits.
+
+    Only the presence of a pair is known for certain -- the live position was
+    first located by searching the document for one -- so search rather than
     assume a fixed nesting.
     """
-    if not isinstance(obj, dict) or depth > 4:
-        return None
+    if not isinstance(obj, dict) or len(path) > 4:
+        return []
+    found: list[tuple[tuple[str, ...], float, float]] = []
     lat = _as_float(obj.get("latitude", obj.get("lat")))
     lng = _as_float(obj.get("longitude", obj.get("lng", obj.get("lon"))))
     if lat is not None and lng is not None and (lat, lng) != (0.0, 0.0):
-        return lat, lng
-    for value in obj.values():
-        found = find_lat_lng(value, depth + 1)
-        if found:
-            return found
-    return None
+        found.append((path, lat, lng))
+    for key in sorted(obj):
+        found.extend(lat_lng_candidates(obj[key], (*path, str(key))))
+    return found
 
 
-def parse_position(document: Any) -> Position | None:
+def _point(lat: float, lng: float) -> tuple[float, float]:
+    """A coordinate pair rounded to about 10 cm, for comparing reads."""
+    return round(lat, 6), round(lng, 6)
+
+
+def pick_lat_lng(
+    data: dict[str, Any],
+    near: tuple[float, float] | None = None,
+    fixed: frozenset[tuple[float, float]] | set[tuple[float, float]] = frozenset(),
+) -> tuple[float, float] | None:
+    """The pair that is the bus, when the document holds more than one.
+
+    Pairs known to be ``fixed`` places are skipped while anything else is on
+    offer. Of the rest, prefer one whose field names say it is the vehicle and
+    not a place; between equally likely pairs, the one nearest ``near``, where
+    the bus was last seen.
+    """
+    candidates = lat_lng_candidates(data)
+    moving = [c for c in candidates if _point(c[1], c[2]) not in fixed]
+    candidates = moving or candidates
+    if not candidates:
+        return None
+
+    def score(candidate: tuple[tuple[str, ...], float, float]) -> tuple[int, float]:
+        path, lat, lng = candidate
+        words = " ".join(path).lower()
+        rank = 2 if not path else 0
+        rank += sum(1 for hint in LIVE_HINTS if hint in words)
+        rank -= sum(10 for hint in FIXED_PLACE_HINTS if hint in words)
+        distance = (
+            haversine_meters(lat, lng, near[0], near[1]) if near else None
+        )
+        return (-rank, distance if distance is not None else 0.0)
+
+    _, lat, lng = min(candidates, key=score)
+    return lat, lng
+
+
+def parse_position(
+    document: Any,
+    near: tuple[float, float] | None = None,
+    fixed: frozenset[tuple[float, float]] | set[tuple[float, float]] = frozenset(),
+) -> Position | None:
     """Turn a Firestore document into a Position, if it holds one."""
     if not isinstance(document, dict):
         return None
     data = decode_fields(document.get("fields") or {})
-    found = find_lat_lng(data)
+    found = pick_lat_lng(data, near, fixed)
     if found is None:
         return None
     # Firestore stamps every write with updateTime, which is the one timestamp
     # here that is certain to exist and to mean "when the tablet last wrote".
     updated = dt_util.parse_datetime(document.get("updateTime") or "")
-    return Position(latitude=found[0], longitude=found[1], updated=updated, raw=data)
+    return Position(
+        latitude=found[0],
+        longitude=found[1],
+        updated=updated,
+        raw=data,
+        candidates=frozenset(_point(lat, lng) for _, lat, lng in lat_lng_candidates(data)),
+    )
 
 
 def parse_districts(payload: Any) -> list[RouteRef]:
@@ -593,7 +655,16 @@ class BusRightApi:
         )
         return Route.from_json(route_id, payload)
 
-    async def async_get_position(self, db_path: str) -> Position | None:
-        """The live position document a route's ``dbPath`` points at."""
+    async def async_get_position(
+        self,
+        db_path: str,
+        near: tuple[float, float] | None = None,
+        fixed: frozenset[tuple[float, float]] | set[tuple[float, float]] = frozenset(),
+    ) -> Position | None:
+        """The live position document a route's ``dbPath`` points at.
+
+        ``near`` (where the bus was last seen) and ``fixed`` (places known not
+        to be the bus) tell the bus apart from anything else the document holds.
+        """
         document = await self._get(f"{FIRESTORE_DOCS}/{db_path}", missing_ok=True)
-        return parse_position(document)
+        return parse_position(document, near, fixed)

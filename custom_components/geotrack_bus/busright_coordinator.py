@@ -80,6 +80,16 @@ STOP_MATCH_M = 150.0
 SAME_STOP_M = 75.0
 # Below this the bus is parked or idling rather than driving.
 MOVING_M = 15.0
+# A fix this far from the last one, faster than a bus can drive, is not the
+# bus: the first live run saw the position flick to a fixed point 2 km away
+# every few reads. Such a jump is only believed once it repeats in a row.
+MAX_SPEED_MPS = 35.0
+MIN_JUMP_M = 300.0
+JUMP_CONFIRMATIONS = 3
+JUMP_AGREE_M = 150.0
+# Floor for the ETA: even at 30 mph in a straight line the bus needs this long
+# to cover the distance, whatever the plan says.
+FLOOR_SPEED_MPS = 13.4
 # Snapshots of what BusRight sent during runs, for diagnostics. Only changes
 # are kept, so this covers several runs.
 CAPTURE_MAX = 600
@@ -161,6 +171,8 @@ class RunState:
     closest_m: float | None = None
     passed_at: datetime | None = None
     arrived: bool = False
+    # Fixes too far from the last believed one, waiting to be confirmed.
+    jumps: list[Position] = field(default_factory=list)
 
 
 @dataclass
@@ -221,10 +233,17 @@ def advance(status: RouteStatus, now: datetime) -> None:
 
     # Advance through the stops in order. Only look a few ahead, so a stop
     # further down the route that passes near an earlier one is not mistaken
-    # for progress. Until the first stop of a run is found, look everywhere:
-    # watching may have started mid-run, after a restart.
+    # for progress. Until the first stop of a run is found, look at every stop
+    # up to yours, since watching may have started mid-run after a restart --
+    # but never beyond it, or one bad fix near a later stop would declare the
+    # bus past you before it had set off.
     start = run.reached_index + 1
-    end = len(route.stops) if run.reached_index < 0 else start + MAX_SKIP
+    if run.reached_index >= 0:
+        end = start + MAX_SKIP
+    elif status.my_index is not None:
+        end = status.my_index + 1
+    else:
+        end = len(route.stops)
     window = route.stops[start:end]
     hits = [
         (position.distance_to(stop.latitude, stop.longitude), stop.index)
@@ -303,6 +322,8 @@ def describe(status: RouteStatus, now: datetime) -> None:
                 - last.scheduled_offset
                 - (now - run.reached_at).total_seconds()
             )
+            if status.distance_m is not None:
+                remaining = max(remaining, status.distance_m / FLOOR_SPEED_MPS)
             status.eta_minutes = round(max(0.0, remaining) / 60, 1)
 
 
@@ -338,6 +359,10 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
             self.statuses[watched.route_id] = RouteStatus(watched=watched)
         self._route_fetched: dict[str, datetime] = {}
         self._position_fetched: dict[str, datetime] = {}
+        self._last_candidates: dict[str, frozenset[tuple[float, float]]] = {}
+        # Per route: coordinate pairs in the position document that are fixed
+        # places, not the bus.
+        self.fixed_points: dict[str, set[tuple[float, float]]] = {}
         self.capture: deque[dict[str, Any]] = deque(maxlen=CAPTURE_MAX)
         self._last_capture: dict[str, dict[str, Any]] = {}
 
@@ -416,10 +441,21 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
             and now - fetched < IDLE_POSITION_REFRESH
         ):
             return
-        position = await self.api.async_get_position(route.db_path)
-        self._position_fetched[route.route_id] = now
-
         previous = status.position
+        near = (
+            (previous.latitude, previous.longitude)
+            if previous and not status.position_stale
+            else None
+        )
+        position = await self.api.async_get_position(
+            route.db_path, near, self.fixed_points.get(route.route_id, set())
+        )
+        self._position_fetched[route.route_id] = now
+        if position is not None:
+            self._learn_fixed(status, position)
+            if near is not None and not self._believable(status, position, now):
+                return
+
         status.position = position or previous
         age = status.position.age if status.position else None
         status.position_stale = age is None or age > MAX_POSITION_AGE
@@ -431,6 +467,62 @@ class BusRightCoordinator(DataUpdateCoordinator[dict[str, RouteStatus]]):
             position.latitude, position.longitude,
         )
         status.moving = moved is not None and moved > MOVING_M
+
+    def _learn_fixed(self, status: RouteStatus, position: Position) -> None:
+        """Note coordinate pairs that stay put while another one moves.
+
+        The bus is the pair that changes from read to read. A pair repeated
+        exactly while another changed is a fixed place riding along in the
+        document, and is ignored from then on.
+        """
+        previous = self._last_candidates.get(status.watched.route_id)
+        self._last_candidates[status.watched.route_id] = position.candidates
+        if previous is None or len(position.candidates) < 2:
+            return
+        unchanged = position.candidates & previous
+        if unchanged and position.candidates - previous:
+            fixed = self.fixed_points.setdefault(status.watched.route_id, set())
+            if not unchanged <= fixed:
+                _LOGGER.debug(
+                    "Treating %s as a fixed place on %s, not the bus",
+                    sorted(unchanged - fixed), status.watched.name,
+                )
+                fixed |= unchanged
+
+    def _believable(self, status: RouteStatus, position: Position, now: datetime) -> bool:
+        """Whether a fix could be the same bus as the last believed one.
+
+        A jump further than the bus could have driven is held back until a run
+        of fixes bears it out -- each within driving distance of the one before
+        -- which a real change of position (a gap in reporting, a restart) does
+        and a stray point flicking in and out does not.
+        """
+        previous, run = status.position, status.run
+        assert previous is not None
+
+        def plausible(a: Position, b: Position) -> bool:
+            gap = haversine_meters(a.latitude, a.longitude, b.latitude, b.longitude)
+            seconds = (
+                (b.updated - a.updated).total_seconds()
+                if a.updated and b.updated
+                else (now - (a.updated or now)).total_seconds()
+            )
+            return gap is None or gap <= max(MIN_JUMP_M, MAX_SPEED_MPS * abs(seconds))
+
+        if plausible(previous, position):
+            run.jumps.clear()
+            return True
+        if run.jumps and not plausible(run.jumps[-1], position):
+            run.jumps.clear()
+        run.jumps.append(position)
+        if len(run.jumps) >= JUMP_CONFIRMATIONS:
+            run.jumps.clear()
+            return True
+        _LOGGER.debug(
+            "Ignoring a BusRight fix on %s that is further than the bus could "
+            "have driven since the last one", status.watched.name,
+        )
+        return False
 
     async def _async_update_data(self) -> dict[str, RouteStatus]:
         """Refresh every route and work out where each bus has got to."""

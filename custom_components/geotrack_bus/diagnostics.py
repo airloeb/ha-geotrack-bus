@@ -42,6 +42,9 @@ async def async_get_config_entry_diagnostics(
             "distance_m": status.distance_m,
             "your_stop_number": None if status.my_index is None else status.my_index + 1,
             "last_stop_reached": status.last_reached,
+            "ignored_fixed_places": sorted(
+                coordinator.fixed_points.get(status.watched.route_id, set())
+            ),
             "stops": [
                 {
                     "number": stop.index + 1,
