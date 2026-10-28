@@ -315,15 +315,23 @@ stop marked pending, completed or skipped, and a live ETA for every stop still
 ahead. That record is used as it stands:
 
 - **Stops away** is the stops before yours BusRight still has as pending.
-- Your stop is **passed** the moment BusRight marks it completed or skipped,
-  at the time BusRight gives. `skipped` on the status sensor says which.
+- Your stop is **passed** once BusRight marks it completed or skipped, at the
+  time BusRight gives. `skipped` on the status sensor says which. Drivers tap
+  "completed" on arrival, usually between two polls. So if the bus was not
+  already caught at the stop, it is reported **at stop** first, and passed once
+  it pulls away or a minute goes by. That way the "at the stop" alert still goes
+  out. A skipped stop, or a tap seen with the bus already 300 m off, goes
+  straight to passed.
 - The **ETA** is BusRight's live ETA for your stop, the figure its app shows.
   The ETA sensor's `source` attribute reads `busright`.
 - **At stop** comes on within 75 m of your stop and stays on until the stop is
   passed. A bus pulling forward a few metres does not read as approaching
   again.
 - **Arriving soon** fires on distance (default 0.55 mi) or stops left
-  (default 1), whichever comes first. Once on, it stays on until the stop is
+  (default 1), whichever comes first. With BusRight's stop count, distance only
+  counts once the bus is within one stop of the stops-left threshold. One
+  morning route starts near its stop and loops away: the bus was inside
+  0.55 mi with six stops still to make, fifteen minutes early. Once on, it stays on until the stop is
   passed or the run ends, so a bus idling right at the threshold does not set
   the alert off twice. `triggered_by` says which threshold fired.
 
