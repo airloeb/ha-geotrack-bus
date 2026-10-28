@@ -97,6 +97,19 @@ MOVING_MPS = 0.5
 MILES = 1609.344
 ETA_BUSRIGHT = "busright"
 ETA_PLANNED = "planned"
+# The driver taps a stop "completed" on arrival, usually between two polls, so
+# the bus is seldom caught at the stop beforehand. When that happens, report
+# it at the stop first -- the "at the stop" alert depends on it -- and passed
+# once it has pulled this far away, or after this long.
+DONE_LEAVE_M = 100.0
+DONE_HOLD = timedelta(seconds=60)
+# Unless it is already this far off: the tap came late, after it had gone.
+DONE_GONE_M = 300.0
+# With BusRight's stop count, straight-line distance only counts once the bus
+# is within this many stops of the stop-count threshold. A route that starts
+# near your stop and loops away put the bus inside 0.55 mi with six stops still
+# to make, fifteen minutes early.
+DISTANCE_STOPS_SLACK = 1
 # A fix this far from the last one, faster than a bus can drive, is not the
 # bus: the first live run saw the position flick to a fixed point 2 km away
 # every few reads. Such a jump is only believed once it repeats in a row.
@@ -195,6 +208,10 @@ class RunState:
     # From BusRight's own record of the run, when the document carries one.
     pending_before: int | None = None
     live_eta: datetime | None = None
+    # When BusRight's completion of your stop was first seen, if the bus had
+    # not been caught at the stop by then, and the nearest it has been since.
+    done_seen_at: datetime | None = None
+    done_closest_m: float | None = None
     # Fixes too far from the last believed one, waiting to be confirmed.
     jumps: list[Position] = field(default_factory=list)
 
@@ -285,9 +302,52 @@ def apply_progress(status: RouteStatus, now: datetime) -> bool:
     )
     run.live_eta = progress.live_etas.get(mine.stop_id or mine_on_route.stop_id or "")
     if mine.done and run.passed_at is None:
-        run.passed_at = mine.done_at or now
-        run.skipped = mine.state == STOP_SKIPPED
+        _finish_stop(status, mine.done_at or now, mine.state == STOP_SKIPPED, now)
     return True
+
+
+def _finish_stop(
+    status: RouteStatus, done_at: datetime, skipped: bool, now: datetime
+) -> None:
+    """Move to passed once BusRight has marked your stop done.
+
+    If the bus was never caught at the stop, it is reported there first and
+    passed once it pulls away or a minute goes by -- unless the stop was
+    skipped, or the bus was already well clear when the mark was seen.
+    """
+    run, position = status.run, status.position
+    mine = status.route.stops[status.my_index] if status.route else None
+    distance = (
+        position.distance_to(mine.latitude, mine.longitude)
+        if position and mine and not status.position_stale
+        else None
+    )
+
+    def passed() -> None:
+        run.passed_at = done_at
+        run.skipped = skipped
+
+    if skipped or (run.arrived and run.done_seen_at is None):
+        passed()
+        return
+    if run.done_seen_at is None:
+        if distance is not None and distance > DONE_GONE_M:
+            passed()
+            return
+        run.arrived = True
+        run.done_seen_at = now
+        run.done_closest_m = distance
+        return
+    if distance is not None:
+        if run.done_closest_m is None or distance < run.done_closest_m:
+            run.done_closest_m = distance
+    pulled_away = (
+        distance is not None
+        and distance > DONE_LEAVE_M
+        and distance > (run.done_closest_m or 0.0) + DONE_LEAVE_M / 2
+    )
+    if pulled_away or now - run.done_seen_at >= DONE_HOLD:
+        passed()
 
 
 def advance(status: RouteStatus, now: datetime, from_busright: bool = False) -> None:
@@ -415,7 +475,9 @@ def warn(status: RouteStatus, options: dict[str, Any]) -> None:
     Two thresholds, whichever trips first: straight-line distance, and stops
     left before yours. The stop count is skipped when your stop is so near the
     start of the route that it would be inside the threshold from the moment
-    the run starts. Once on, the warning holds until the stop is passed or the
+    the run starts. With BusRight's stop count, distance only counts within
+    ``DISTANCE_STOPS_SLACK`` stops of the stop threshold: a route can start
+    beside your stop and loop away before coming back to it. Once on, the warning holds until the stop is passed or the
     run ends -- a bus idling right at the threshold distance flicked it on, off
     and on again, and the alert went out twice.
 
@@ -443,7 +505,15 @@ def warn(status: RouteStatus, options: dict[str, Any]) -> None:
     reason = None
     if status.status == STATUS_AT_STOP:
         reason = "at_stop"
-    elif status.distance_m is not None and status.distance_m <= miles * MILES:
+    elif (
+        status.distance_m is not None
+        and status.distance_m <= miles * MILES
+        and (
+            not status.from_busright
+            or status.stops_away is None
+            or status.stops_away <= stops + DISTANCE_STOPS_SLACK
+        )
+    ):
         reason = "distance"
     elif (
         status.my_index is not None
