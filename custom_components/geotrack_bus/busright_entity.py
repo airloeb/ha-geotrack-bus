@@ -444,6 +444,16 @@ class BusRightTracker(BusRightRouteEntity, TrackerEntity):
         self._attr_unique_id = f"busright_{route_id}_tracker"
 
     @property
+    def force_update(self) -> bool:
+        """Write the state only when it changes, like any other entity.
+
+        Home Assistant's trackers force every write by default, which resets
+        last_changed on each poll even while the bus sits in one zone, and
+        breaks "has been at school for N minutes" conditions.
+        """
+        return False
+
+    @property
     def source_type(self) -> SourceType:
         """Positions come from the driver's tablet GPS."""
         return SourceType.GPS

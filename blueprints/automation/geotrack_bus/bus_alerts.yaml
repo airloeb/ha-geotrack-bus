@@ -89,7 +89,13 @@ triggers:
 
 actions:
   - variables:
-      minutes: "{{ state_attr(soon_entity, 'eta_minutes') }}"
+      # BusRight's ETA (and its route plan) assume no time spent at stops and
+      # ran two to four minutes short on every run checked, so only an ETA
+      # learned from past runs (GeoTrack) is read out.
+      minutes: >-
+        {{ state_attr(soon_entity, 'eta_minutes')
+           if state_attr(soon_entity, 'eta_source') not in ['busright', 'planned']
+           else none }}
       miles: "{{ state_attr(soon_entity, 'distance_miles') }}"
       stops: "{{ state_attr(soon_entity, 'stops_away') }}"
       detail: >-

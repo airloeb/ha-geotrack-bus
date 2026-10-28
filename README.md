@@ -384,7 +384,9 @@ driver names and stop notes are left out.
 `blueprints/automation/geotrack_bus/bus_alerts.yaml` announces on your
 speakers and sends a WhatsApp message (through the WAHA integration) when a
 stop's **Arriving soon** turns on, and optionally again at **Bus at stop**.
-It works with GeoTrack and BusRight stops alike. Import it from
+It works with GeoTrack and BusRight stops alike. The message gives distance
+and stops left. It reads out minutes only for GeoTrack's learned ETA: BusRight's
+own ETA ran two to four minutes short on every run checked. Import it from
 **Settings → Automations → Blueprints → Import Blueprint** with the file's
 GitHub URL, then create one automation per child.
 
