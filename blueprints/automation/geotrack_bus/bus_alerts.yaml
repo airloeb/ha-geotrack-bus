@@ -63,6 +63,14 @@ blueprint:
       default: default
       selector:
         text:
+    include_driver:
+      name: Name the driver
+      description: >-
+        Add the driver's name to the WhatsApp message, when the bus company
+        gives one (BusRight does; GeoTrack does not).
+      default: true
+      selector:
+        boolean:
 
 mode: queued
 max: 4
@@ -74,6 +82,7 @@ variables:
   whatsapp_chat: !input whatsapp_chat
   waha_session: !input waha_session
   soon_entity: !input arriving_soon
+  include_driver: !input include_driver
 
 triggers:
   - trigger: state
@@ -104,6 +113,17 @@ actions:
         {%- if miles is number -%}{%- set bits = bits + [(miles | round(1)) ~ ' miles out'] -%}{%- endif -%}
         {%- if stops is number and stops > 0 -%}{%- set bits = bits + [stops ~ (' stop' if stops == 1 else ' stops') ~ ' to go'] -%}{%- endif -%}
         {{ bits | join(', ') }}
+      # The driver is on the stop's "Route serving this stop" sensor, which
+      # follows whichever run is on; look it up from the stop's device.
+      driver: >-
+        {%- set ns = namespace(d='') -%}
+        {%- if include_driver -%}
+        {%- for e in device_entities(device_id(soon_entity) or '') | select('match', 'sensor[.]') -%}
+        {%- set d = state_attr(e, 'driver') -%}
+        {%- if d and not ns.d -%}{%- set ns.d = d | string | trim -%}{%- endif -%}
+        {%- endfor -%}
+        {%- endif -%}
+        {{ ns.d }}
       spoken: >-
         {%- if trigger.id == 'here' -%}{{ who }} is at the stop now.
         {%- else -%}{{ who }} is almost here{{ ', ' ~ detail if detail else '' }}. Time to head out.
@@ -111,7 +131,7 @@ actions:
       written: >-
         {%- if trigger.id == 'here' -%}🚌 {{ who }} is at the stop now.
         {%- else -%}🚌 {{ who }} is almost here{{ ' (' ~ detail ~ ')' if detail else '' }}.
-        {%- endif -%}
+        {%- endif -%}{{ ' Driver: ' ~ driver ~ '.' if driver else '' }}
   - if:
       - condition: template
         value_template: "{{ speakers | count > 0 and tts_engine | string | length > 0 }}"
